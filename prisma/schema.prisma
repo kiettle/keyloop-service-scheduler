@@ -1,8 +1,132 @@
-// Foundation only: domain models and reviewed SQL migrations follow in a later phase.
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum AppointmentStatus {
+  CONFIRMED
+  CANCELLED
+
+  @@map("appointment_status")
+}
+
+model Dealership {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  timeZone     String        @map("time_zone")
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  technicians  Technician[]
+  serviceBays  ServiceBay[]
+  appointments Appointment[]
+
+  @@map("dealerships")
+}
+
+model Customer {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  vehicles     Vehicle[]
+  appointments Appointment[]
+
+  @@map("customers")
+}
+
+model Vehicle {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId   String        @map("customer_id") @db.Uuid
+  vin          String        @unique
+  make         String
+  model        String
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  customer     Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  appointments Appointment[]
+
+  @@index([customerId])
+  @@map("vehicles")
+}
+
+model ServiceType {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String
+  // Positive duration is enforced by service_types_positive_duration in migration SQL.
+  durationMinutes Int                       @map("duration_minutes")
+  isActive        Boolean                   @default(true) @map("is_active")
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  qualifications  TechnicianQualification[]
+  appointments    Appointment[]
+
+  @@map("service_types")
+}
+
+model Technician {
+  id             String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dealershipId   String                    @map("dealership_id") @db.Uuid
+  name           String
+  isActive       Boolean                   @default(true) @map("is_active")
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  dealership     Dealership                @relation(fields: [dealershipId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  qualifications TechnicianQualification[]
+  appointments   Appointment[]
+
+  @@index([dealershipId, isActive])
+  @@map("technicians")
+}
+
+model TechnicianQualification {
+  technicianId  String      @map("technician_id") @db.Uuid
+  serviceTypeId String      @map("service_type_id") @db.Uuid
+  technician    Technician  @relation(fields: [technicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([technicianId, serviceTypeId])
+  @@index([serviceTypeId])
+  @@map("technician_qualifications")
+}
+
+model ServiceBay {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dealershipId String        @map("dealership_id") @db.Uuid
+  name         String
+  isActive     Boolean       @default(true) @map("is_active")
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  dealership   Dealership    @relation(fields: [dealershipId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  appointments Appointment[]
+
+  @@index([dealershipId, isActive])
+  @@map("service_bays")
+}
+
+model Appointment {
+  id            String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId    String            @map("customer_id") @db.Uuid
+  vehicleId     String            @map("vehicle_id") @db.Uuid
+  dealershipId  String            @map("dealership_id") @db.Uuid
+  serviceTypeId String            @map("service_type_id") @db.Uuid
+  technicianId  String            @map("technician_id") @db.Uuid
+  serviceBayId  String            @map("service_bay_id") @db.Uuid
+  // SQL migration enforces end > start and independent partial GiST exclusions.
+  startAt       DateTime          @map("start_at") @db.Timestamptz(3)
+  endAt         DateTime          @map("end_at") @db.Timestamptz(3)
+  status        AppointmentStatus @default(CONFIRMED)
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  customer      Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  vehicle       Vehicle           @relation(fields: [vehicleId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  dealership    Dealership        @relation(fields: [dealershipId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  serviceType   ServiceType       @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  technician    Technician        @relation(fields: [technicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  serviceBay    ServiceBay        @relation(fields: [serviceBayId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([customerId])
+  @@index([vehicleId])
+  @@index([dealershipId, startAt])
+  @@index([serviceTypeId])
+  // These B-tree indexes also cover nonblocking rows for FK checks/history reads.
+  @@index([technicianId])
+  @@index([serviceBayId])
+  @@map("appointments")
 }

@@ -1,6 +1,6 @@
 # Keyloop Service Scheduler
 
-Backend-only submission for Keyloop Scenario A. **Current milestone: Phase 1 foundation only.** Appointment booking, eligibility, allocation, availability, domain models, migrations, seeds, and concurrency protections are not implemented yet. The complete proposed contract is in [docs/SPEC.md](docs/SPEC.md).
+Backend-only submission for Keyloop Scenario A. **Current milestone: Phase 2 database and domain modeling.** The eight domain models, migrations, reference seeds, and database overlap protections are implemented. Appointment booking, eligibility checks, allocation, availability, and appointment APIs remain unimplemented. The complete proposed contract is in [docs/SPEC.md](docs/SPEC.md).
 
 ## Foundation design
 
@@ -8,7 +8,7 @@ One NestJS process, organized as a modular monolith: `AppModule` composes config
 
 `GET /health` returns `200` and `{"status":"ok"}`. This is process liveness, not a continuous database-readiness check. Database connectivity is verified separately with `npm run db:check`; no SQL error or credentials are returned by that script.
 
-The current Prisma schema intentionally has no models. The latest approved scope narrows the spec's Phase 1 description: domain schema, migrations, seeds, and SQL exclusion constraints are deferred to a separately approved phase. There is no migration or seed command to run at this milestone. No scheduling correctness claims can be made yet.
+The Prisma schema defines Dealership, Customer, Vehicle, ServiceType, Technician, TechnicianQualification, ServiceBay, and Appointment. Reviewed SQL adds CHECK constraints and independent partial GiST exclusions for technician and bay overlaps. See [docs/DATABASE.md](docs/DATABASE.md) for enforcement boundaries, migration risks, fixture IDs, and test evidence. Database constraint tests do not prove application allocation or retry behavior.
 
 ## Prerequisites and pinned tools
 
@@ -31,6 +31,8 @@ npm ci
 npm run prisma:generate
 npm run db:up
 npm run prisma:validate
+npm run db:migrate
+npm run db:seed
 npm run db:check
 npm run build
 npm start
@@ -66,7 +68,19 @@ npm run db:check
 
 `npm test` runs configuration unit tests, an isolated HTTP contract suite for the health module, and a real-driver regression proving startup rejects an unreachable database. These tests do not require a running PostgreSQL server; the startup-failure regression uses an unreachable local port. They do not claim to verify booking constraints or transactional behavior. `npm run db:check` executes an actual `SELECT 1` through Prisma against the configured database and exits nonzero on failure. `npm run test:unit` and `npm run test:http` select individual suites.
 
-Formatting is explicit (`npm run format`); lint and format checks do not modify files. Existing assessment documents are excluded from automatic formatting. For this milestone, test/build scripts and a live app check are recorded in [docs/PHASE_1.md](docs/PHASE_1.md); results apply only to the documented environment and commands.
+Database integration checks run separately against the dedicated test service:
+
+```sh
+# Add TEST_DATABASE_URL from .env.example to an existing .env first.
+npm run db:test:up
+npm run test:integration
+```
+
+Each integration run creates a fresh UUID-named database, applies committed migrations using `prisma migrate deploy`, runs `prisma db seed`, tests real SQL writes, and drops only its own database afterward. `TEST_DATABASE_URL` is required and must name `service_scheduler_test` on the dedicated test server (default port 55433); the test role needs permission to create databases. No reset or truncation runs against the developer database. `npm run test:all` runs both suites when the test server is available. Stop/remove the test container with `docker compose --profile test rm --stop --force postgres-test`; it has disposable tmpfs storage.
+
+Use `npm run db:migrate` and `npm run db:seed` for local development after schema changes. Seed reruns insert missing fixtures without overwriting existing edits or deleting appointments. Do not use `prisma db push` as a replacement for migrations: it cannot reconstruct the SQL-only overlap constraints.
+
+Formatting is explicit (`npm run format`); lint and format checks do not modify files. Existing assessment documents are excluded from automatic formatting. Foundation history is recorded in [docs/PHASE_1.md](docs/PHASE_1.md), and database verification in [docs/PHASE_2.md](docs/PHASE_2.md); results apply only to the documented environment and commands.
 
 Stop the app with Ctrl-C. Stop PostgreSQL without deleting its volume:
 
@@ -78,6 +92,6 @@ Do not remove the volume unless you intend to delete its data. If startup fails,
 
 ## AI Collaboration Narrative
 
-The developer selected Scenario A, requested critical design reviews, and explicitly approved foundation work only. AI inspected the original assessment and the spec, raised risks around transaction retries and the evidence needed to prove overlap protection, and then created this scaffold within the approved boundary. No E-commerce source was modified or copied into this application. The developer retains ownership of scope and subsequent implementation decisions.
+The developer selected Scenario A, requested critical design reviews, and approved foundation work, then database/domain modeling as a separate phase. AI inspected the original assessment and the spec, raised risks around transaction retries and the evidence needed to prove overlap protection, and then created this scaffold within the approved boundary. No E-commerce source was modified or copied into this application. The developer retains ownership of scope and subsequent implementation decisions.
 
-A follow-up review reproduced and corrected two foundation bugs: the original development runner omitted Nest constructor metadata, and the Prisma adapter created its pool lazily, so a startup query was needed to verify connectivity. Phase 1 verification consists of commands actually executed, documented in the milestone record. Unit/health tests are separate from real PostgreSQL connectivity checks. Domain constraints, booking behavior, concurrency tests, the final system design document, and the required 5–10 minute video remain future work. This narrative will be updated using real review findings and test results as implementation progresses.
+A follow-up review reproduced and corrected two foundation bugs: the original development runner omitted Nest constructor metadata, and the Prisma adapter created its pool lazily, so a startup query was needed to verify connectivity. Phase 1 verification consists of commands actually executed, documented in the milestone record. Unit/health tests are separate from real PostgreSQL connectivity checks. Phase 2 adds actual migration, seed, constraint, and competing-SQL-write verification. Its first test run exposed an incorrect assumption about the Prisma adapter error shape; assertions were corrected against observed PostgreSQL SQLSTATEs. Application booking behavior, allocation/retry tests, the final system design document, and the required 5–10 minute video remain future work. This narrative will be updated using real review findings and test results as implementation progresses.

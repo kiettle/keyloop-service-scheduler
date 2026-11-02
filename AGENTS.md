@@ -11,12 +11,12 @@ Build a reviewable, reliable **backend-only** submission for **Keyloop Technical
 
 If sources disagree, report the conflict rather than silently resolving it. Separate **Keyloop requirements**, **proposed assumptions**, and **optional enhancements**.
 
-## Current mode: PHASE 1 FOUNDATION APPROVED
-The user has approved implementation of Phase 1 foundation only. Use `docs/SPEC.md` as the specification, subject to this explicit phase boundary.
+## Current mode: PHASE 2 DATABASE & DOMAIN MODELING APPROVED
+The user has approved Phase 1 foundation and Phase 2 database/domain modeling. Use `docs/SPEC.md` as the specification, subject to this explicit phase boundary.
 
-Allowed: backend NestJS/TypeScript scaffolding, PostgreSQL Docker Compose, Prisma configuration and connection lifecycle, validated environment variables, `.env.example`, `GET /health`, basic tests, linting/formatting, and setup/verification documentation.
+Allowed: backend NestJS/TypeScript scaffolding, PostgreSQL Docker Compose, Prisma configuration and connection lifecycle, validated environment variables, `.env.example`, `GET /health`, tests, linting/formatting, setup/verification documentation, the eight specified Prisma models, reviewed SQL migrations and constraints, deterministic seeds, and real PostgreSQL integration tests.
 
-Not yet authorized: domain schema/migrations/seeds, booking logic, scheduling algorithms, resource allocation, appointment APIs, or optional features. Those require a later explicit phase approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
+Not yet authorized: booking logic, scheduling algorithms, resource allocation, appointment APIs, or optional features. Those require a later explicit phase approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
 
 The user's existing E-commerce project is **reference material only**. You may inspect its architecture, transaction handling, tests, and NestJS patterns, but must not edit it or transplant its domain assumptions into the scheduler. If asked to review the spec, produce findings and concrete suggested edits; do not implement fixes automatically.
 

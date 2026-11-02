@@ -2,7 +2,7 @@
   "name": "keyloop-service-scheduler",
   "version": "0.1.0",
   "private": true,
-  "description": "Keyloop Scenario A backend — Phase 1 foundation",
+  "description": "Keyloop Scenario A backend — database and domain foundation",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=24.21.0 <25",
@@ -14,7 +14,7 @@
     "start": "node dist/main.js",
     "start:dev": "node --watch --require ts-node/register src/main.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "lint": "eslint \"{src,test,prisma}/**/*.ts\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
@@ -24,7 +24,12 @@
     "prisma:validate": "prisma validate",
     "db:check": "node scripts/check-database.cjs",
     "db:up": "docker compose up -d --wait postgres",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "db:test:up": "docker compose --profile test up -d --wait postgres-test",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
+    "test:all": "npm test && npm run test:integration"
   },
   "dependencies": {
     "@nestjs/common": "11.2.8",
