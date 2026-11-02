@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+package-lock.json
+AGENTS.md
+KEYLOOP_START_HERE.md
+docs/SPEC.md
+.env
