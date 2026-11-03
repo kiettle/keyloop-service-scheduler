@@ -2,6 +2,7 @@ export interface Environment {
   NODE_ENV: 'development' | 'test' | 'production';
   PORT: number;
   DATABASE_URL: string;
+  BOOKING_MAX_ATTEMPTS: number;
 }
 
 export function validateEnvironment(input: Record<string, unknown>): Environment {
@@ -39,5 +40,22 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
     throw new Error('DATABASE_URL must be a PostgreSQL URL with a host and database.');
   }
 
-  return { NODE_ENV: nodeEnv, PORT: port, DATABASE_URL: input.DATABASE_URL };
+  const attemptsValue = input.BOOKING_MAX_ATTEMPTS ?? '4';
+  const attempts = Number(attemptsValue);
+  if (
+    (typeof attemptsValue !== 'string' && typeof attemptsValue !== 'number') ||
+    !/^\d+$/.test(String(attemptsValue)) ||
+    !Number.isInteger(attempts) ||
+    attempts < 1 ||
+    attempts > 10
+  ) {
+    throw new Error('BOOKING_MAX_ATTEMPTS must be an integer between 1 and 10.');
+  }
+
+  return {
+    NODE_ENV: nodeEnv,
+    PORT: port,
+    DATABASE_URL: input.DATABASE_URL,
+    BOOKING_MAX_ATTEMPTS: attempts,
+  };
 }

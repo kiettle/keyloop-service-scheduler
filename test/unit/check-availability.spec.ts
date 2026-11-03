@@ -89,12 +89,16 @@ describe('availability orchestration', () => {
 
   it('distinguishes a missing dealership from unavailability', async () => {
     repository.dealershipExists.mockResolvedValue(false);
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'DEALERSHIP_NOT_FOUND' });
+    await expect(useCase.execute(input)).rejects.toMatchObject({
+      code: 'DEALERSHIP_NOT_FOUND',
+    });
   });
 
   it('distinguishes a missing service type from unavailability', async () => {
     repository.findServiceType.mockResolvedValue(null);
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'SERVICE_TYPE_NOT_FOUND' });
+    await expect(useCase.execute(input)).rejects.toMatchObject({
+      code: 'SERVICE_TYPE_NOT_FOUND',
+    });
   });
 
   it('rejects an inactive service type', async () => {
@@ -103,7 +107,9 @@ describe('availability orchestration', () => {
       isActive: false,
       durationMinutes: 30,
     });
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'SERVICE_TYPE_INACTIVE' });
+    await expect(useCase.execute(input)).rejects.toMatchObject({
+      code: 'SERVICE_TYPE_INACTIVE',
+    });
   });
 
   it.each([new Date(NaN), now, new Date('2035-01-14T23:59:59Z')])(

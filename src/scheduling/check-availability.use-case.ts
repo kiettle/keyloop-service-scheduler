@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { Clock } from '../common/time/clock';
 import { calculateServiceInterval } from './interval';
 import { ResourceAllocation, ResourceAllocationService } from './resource-allocation.service';
@@ -28,7 +29,10 @@ export class CheckAvailabilityUseCase {
     private readonly clock: Clock,
   ) {}
 
-  async execute(input: CheckAvailabilityInput): Promise<AvailabilityResult> {
+  async execute(
+    input: CheckAvailabilityInput,
+    transactionClient?: Prisma.TransactionClient,
+  ): Promise<AvailabilityResult> {
     const { startAt } = input;
 
     if (!(startAt instanceof Date) || !Number.isFinite(startAt.getTime())) {
@@ -39,8 +43,8 @@ export class CheckAvailabilityUseCase {
       throw new SchedulingError('INVALID_BOOKING_TIME', 'Start time must be in the future.');
     }
     const [dealershipExists, serviceType] = await Promise.all([
-      this.repository.dealershipExists(input.dealershipId),
-      this.repository.findServiceType(input.serviceTypeId),
+      this.repository.dealershipExists(input.dealershipId, transactionClient),
+      this.repository.findServiceType(input.serviceTypeId, transactionClient),
     ]);
     if (!dealershipExists) {
       throw new SchedulingError('DEALERSHIP_NOT_FOUND', 'Dealership not found.');
@@ -56,6 +60,7 @@ export class CheckAvailabilityUseCase {
       input.dealershipId,
       input.serviceTypeId,
       interval,
+      transactionClient,
     );
     return {
       dealershipId: input.dealershipId,

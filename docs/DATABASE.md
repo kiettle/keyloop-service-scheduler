@@ -1,6 +1,6 @@
 # Database and domain model
 
-Phase 2 introduced persistence and database constraints. [Phase 3](PHASE_3.md) adds read-only eligibility queries and deterministic candidate selection. There are no booking/availability APIs, reservations, application retries, cancellation workflows, or administrative endpoints. The only HTTP endpoint remains `/health`.
+Phase 2 introduced persistence and database constraints. Phase 3 added read-only eligibility queries and deterministic candidate selection. [Phase 4](PHASE_4.md) adds booking/retrieval/availability APIs, atomic confirmation, and bounded conflict retries using the unchanged schema and exclusions. Cancellation and administrative write APIs remain unimplemented.
 
 ## Model and relationships
 
@@ -16,15 +16,15 @@ Foreign keys use RESTRICT on deletion and ID updates. This protects referenced d
 
 ## Integrity enforcement
 
-| Rule                                                                                                 | Authority                                                            |
-| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Required columns, entity references, VIN uniqueness, unique qualification pair                       | SQL NOT NULL, foreign keys, unique index/composite primary key       |
-| Positive service duration                                                                            | PostgreSQL INTEGER plus `service_types_positive_duration` CHECK      |
-| `startAt < endAt`                                                                                    | `appointment_valid_interval` CHECK                                   |
-| No overlapping confirmed appointments for a technician                                               | `no_overlapping_technician_appointments`                             |
-| No overlapping confirmed appointments for a bay                                                      | `no_overlapping_bay_appointments`                                    |
-| Qualification, active status, matching resource dealership and customer/vehicle ownership at booking | Future application validation; ordinary FKs establish existence only |
-| End time derived from the service duration, future start time, valid API input                       | Future application validation                                        |
+| Rule                                                                                                 | Authority                                                             |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Required columns, entity references, VIN uniqueness, unique qualification pair                       | SQL NOT NULL, foreign keys, unique index/composite primary key        |
+| Positive service duration                                                                            | PostgreSQL INTEGER plus `service_types_positive_duration` CHECK       |
+| `startAt < endAt`                                                                                    | `appointment_valid_interval` CHECK                                    |
+| No overlapping confirmed appointments for a technician                                               | `no_overlapping_technician_appointments`                              |
+| No overlapping confirmed appointments for a bay                                                      | `no_overlapping_bay_appointments`                                     |
+| Qualification, active status, matching resource dealership and customer/vehicle ownership at booking | Phase 4 application validation; ordinary FKs establish existence only |
+| End time derived from the service duration, future start time, valid API input                       | Phase 4 application validation                                        |
 
 Both exclusion constraints are immediate/non-deferrable and use `tstzrange(start_at, end_at, '[)')`. They independently reject equal-resource overlapping intervals, including direct inserts and updates from different clients. Intervals ending exactly when another begins are accepted. `btree_gist` supplies UUID equality for these GiST constraints. See PostgreSQL's [range constraint documentation](https://www.postgresql.org/docs/17/rangetypes.html#RANGETYPES-CONSTRAINT) and [btree_gist documentation](https://www.postgresql.org/docs/17/btree-gist.html).
 
@@ -43,8 +43,8 @@ Risks and limitations:
 - The migration role needs schema creation/DDL privileges and permission to install `btree_gist`. It is a trusted extension on standard PostgreSQL, requiring CREATE privilege on the database; managed hosts may impose additional restrictions. Verification used PostgreSQL 17.6 in Docker, not a hosted service.
 - Adding exclusions to an existing populated table can fail on overlapping data and take locks during index construction. This initial migration targets a clean schema. Future data repair/migration plans must be reviewed separately.
 - Prisma's schema does not express these CHECK/exclusion definitions. Committed SQL migrations are essential; `db push`, or rebuilding solely from the Prisma model, is insufficient. Tests apply actual migrations rather than mirroring the constraints in mocks.
-- Exclusion conflicts can wait on another transaction. The observed raw-query error is Prisma `P2010`, with PostgreSQL SQLSTATE in `meta.driverAdapterError.cause.originalCode` (`23P01` for exclusion). The message identifies the named constraint. This shape is specific to the pinned Prisma/adapter versions and raw-query path; ORM model-write errors must be verified when booking is implemented.
-- Concurrent database writes can also deadlock (`40P01`). Database constraints add no retries or resource-selection policy; Phase 3's advisory candidate selection does not reserve resources. A future booking operation must classify errors narrowly, roll back, and retry in a new transaction within a bounded policy.
+- Exclusion conflicts can wait on another transaction. Observed raw-query errors are Prisma `P2010`; ORM inserts report `P2039`. Both expose PostgreSQL SQLSTATE in `meta.driverAdapterError.cause.originalCode` (`23P01` for exclusion). Phase 4 verifies both technician and bay ORM failures and maps the underlying SQLSTATE to a resource conflict. An unrelated `P2039` is not automatically retryable. This behavior is specific to the pinned Prisma/adapter versions.
+- Concurrent database writes can also deadlock (`40P01`). Phase 4 treats explicit deadlock/serialization failures (`40P01`, `40001`, or Prisma `P2034`) separately from exclusions, but retries both only after complete rollback in a fresh transaction. A real deadlock test verifies classification. The default budget is four total attempts. Exhaustion without a fresh determination of unavailability yields `503 BOOKING_CONTENTION`; empty candidate sets yield `409 NO_AVAILABILITY`.
 - Database constraints guarantee resource non-overlap; they do not provide request idempotency, fair resource allocation, or complete business validation.
 
 ## Deterministic reference fixtures
@@ -68,4 +68,4 @@ Start the separate `postgres-test` Compose profile service with `npm run db:test
 
 The harness requires the base database name `service_scheduler_test`; it never substitutes `DATABASE_URL`. Each run generates a new `scheduler_test_<uuid hex>` database, applies the committed migration through the real CLI, runs the real seed CLI, and drops that generated database afterward. The test role needs CREATEDB (the local Compose test role has it). No pre-existing database is reset. The two raw identifier statements use only this internally generated name; no caller-provided SQL is interpolated.
 
-Tests inspect named constraints and actual SQLSTATEs, test all overlap shapes independently for technicians and bays, test adjacency in both directions, status predicates, SQL updates, required fields, all appointment FKs, reference FKs, unique keys, rollback, historical duration, and seed repeatability. A database-level contention test runs 20 inserts through two clients and checks final row count and overlap invariants. This is not an application booking/retry test; application-level concurrency acceptance remains outstanding.
+Tests inspect named constraints and actual SQLSTATEs, test all overlap shapes independently for technicians and bays, test adjacency in both directions, status predicates, SQL updates, required fields, all appointment FKs, reference FKs, unique keys, rollback, historical duration, and seed repeatability. The original database-level contention test runs 20 inserts through two clients. Phase 4 additionally sends concurrent HTTP bookings through two Nest app instances, forces a real allocation conflict, verifies fresh-transaction recovery, and checks final row counts, qualifications, references, and SQL overlap invariants.

@@ -9,6 +9,7 @@ describe('environment validation', () => {
       NODE_ENV: 'development',
       PORT: 3000,
       DATABASE_URL: databaseUrl,
+      BOOKING_MAX_ATTEMPTS: 4,
     });
   });
 
@@ -17,6 +18,22 @@ describe('environment validation', () => {
       validateEnvironment({ DATABASE_URL: databaseUrl, PORT: '3100', NODE_ENV: 'test' }).PORT,
     ).toBe(3100);
   });
+
+  it('parses a configured booking attempt limit', () => {
+    expect(
+      validateEnvironment({ DATABASE_URL: databaseUrl, BOOKING_MAX_ATTEMPTS: '2' })
+        .BOOKING_MAX_ATTEMPTS,
+    ).toBe(2);
+  });
+
+  it.each(['0', '11', '1.5', '', 'four', true])(
+    'rejects invalid booking attempts %p',
+    (BOOKING_MAX_ATTEMPTS) => {
+      expect(() =>
+        validateEnvironment({ DATABASE_URL: databaseUrl, BOOKING_MAX_ATTEMPTS }),
+      ).toThrow('BOOKING_MAX_ATTEMPTS');
+    },
+  );
 
   it.each(['0', '65536', '3.5', '3000junk', '', '-1'])('rejects invalid port %p', (PORT) => {
     expect(() => validateEnvironment({ DATABASE_URL: databaseUrl, PORT })).toThrow('PORT');

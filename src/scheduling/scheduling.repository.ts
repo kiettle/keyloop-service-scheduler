@@ -8,16 +8,19 @@ import { EligibleResources } from './resource-allocation.service';
 export class SchedulingRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async dealershipExists(dealershipId: string): Promise<boolean> {
-    const dealership = await this.prisma.dealership.findUnique({
+  async dealershipExists(
+    dealershipId: string,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<boolean> {
+    const dealership = await client.dealership.findUnique({
       where: { id: dealershipId },
       select: { id: true },
     });
     return dealership !== null;
   }
 
-  findServiceType(serviceTypeId: string) {
-    return this.prisma.serviceType.findUnique({
+  findServiceType(serviceTypeId: string, client: Prisma.TransactionClient = this.prisma) {
+    return client.serviceType.findUnique({
       where: { id: serviceTypeId },
       select: { id: true, isActive: true, durationMinutes: true },
     });
@@ -27,6 +30,7 @@ export class SchedulingRepository {
     dealershipId: string,
     serviceTypeId: string,
     interval: TimeInterval,
+    client: Prisma.TransactionClient = this.prisma,
   ): Promise<EligibleResources> {
     const blockingOverlap: Prisma.AppointmentWhereInput = {
       status: 'CONFIRMED',
@@ -35,7 +39,7 @@ export class SchedulingRepository {
     };
     // Two set-based reads regardless of resource count; no queries per candidate.
     const [technicians, bays] = await Promise.all([
-      this.prisma.technician.findMany({
+      client.technician.findMany({
         where: {
           dealershipId,
           isActive: true,
@@ -44,7 +48,7 @@ export class SchedulingRepository {
         },
         select: { id: true },
       }),
-      this.prisma.serviceBay.findMany({
+      client.serviceBay.findMany({
         where: {
           dealershipId,
           isActive: true,

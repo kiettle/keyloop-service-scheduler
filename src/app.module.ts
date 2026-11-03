@@ -4,6 +4,8 @@ import { validateEnvironment } from './config/environment';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { SchedulingModule } from './scheduling/scheduling.module';
+import { AppointmentsModule } from './appointments/appointments.module';
+import { HttpModule } from './common/http/http.module';
 
 @Module({
   imports: [
@@ -11,6 +13,8 @@ import { SchedulingModule } from './scheduling/scheduling.module';
     DatabaseModule,
     HealthModule,
     SchedulingModule,
+    AppointmentsModule,
+    HttpModule,
   ],
 })
 export class AppModule {}

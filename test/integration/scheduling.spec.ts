@@ -244,7 +244,9 @@ describe('read-only PostgreSQL scheduling', () => {
       code: 'SERVICE_TYPE_NOT_FOUND',
     });
     await prisma.serviceType.update({ where: { id: id.oilChange }, data: { isActive: false } });
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'SERVICE_TYPE_INACTIVE' });
+    await expect(useCase.execute(input)).rejects.toMatchObject({
+      code: 'SERVICE_TYPE_INACTIVE',
+    });
     await expect(useCase.execute({ ...input, dealershipId: randomUUID() })).rejects.toMatchObject({
       code: 'DEALERSHIP_NOT_FOUND',
     });

@@ -11,12 +11,14 @@ Build a reviewable, reliable **backend-only** submission for **Keyloop Technical
 
 If sources disagree, report the conflict rather than silently resolving it. Separate **Keyloop requirements**, **proposed assumptions**, and **optional enhancements**.
 
-## Current mode: PHASE 3 READ-ONLY SCHEDULING APPROVED
-The user has approved Phases 1–2 and Phase 3 read-only scheduling logic. Use `docs/SPEC.md` as the specification, subject to this explicit phase boundary.
+## Current mode: PHASE 4 BOOKING API & CONCURRENCY APPROVED
+The user has approved Phases 1–3 and Phase 4 booking APIs and concurrency. Use `docs/SPEC.md` as the specification, subject to this explicit phase boundary.
 
 Allowed: backend NestJS/TypeScript scaffolding, PostgreSQL Docker Compose, Prisma configuration and connection lifecycle, validated environment variables, `.env.example`, `GET /health`, tests, linting/formatting, setup/verification documentation, the eight specified Prisma models, reviewed SQL migrations and constraints, deterministic seeds, real PostgreSQL integration tests, service interval calculation, resource eligibility reads, deterministic candidate selection, and an internal availability use case.
 
-Not yet authorized: appointment writes/reservations, transactional booking, retries, appointment/availability HTTP APIs, idempotency, cancellation APIs, or optional features. Those require a later explicit phase approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
+Phase 4 additionally allows POST /api/v1/appointments, GET /api/v1/appointments/:id, GET /api/v1/dealerships/:dealershipId/availability, validated DTOs, atomic booking with existing PostgreSQL exclusions, bounded retries in fresh transactions, correlated structured logs, and unit/PostgreSQL/HTTP/concurrency tests and documentation.
+
+Not yet authorized: Phase 5, idempotency, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, notifications, or optional infrastructure. Those require a later explicit approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
 
 The user's existing E-commerce project is **reference material only**. You may inspect its architecture, transaction handling, tests, and NestJS patterns, but must not edit it or transplant its domain assumptions into the scheduler. If asked to review the spec, produce findings and concrete suggested edits; do not implement fixes automatically.
 
