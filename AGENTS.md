@@ -18,7 +18,13 @@ Allowed: backend NestJS/TypeScript scaffolding, PostgreSQL Docker Compose, Prism
 
 Phase 4 additionally allows POST /api/v1/appointments, GET /api/v1/appointments/:id, GET /api/v1/dealerships/:dealershipId/availability, validated DTOs, atomic booking with existing PostgreSQL exclusions, bounded retries in fresh transactions, correlated structured logs, and unit/PostgreSQL/HTTP/concurrency tests and documentation.
 
-Not yet authorized: Phase 5, idempotency, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, notifications, or optional infrastructure. Those require a later explicit approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
+The user additionally approved production-oriented booking concurrency hardening: conflict-aware insertion with existing exclusions, bounded admission and request/database time budgets, jittered fresh-transaction retries, cancellation of queued requests, and isolated 100-request burst / 1,000-RPS load verification. Keep the current architecture and preserve staged changes. This does not authorize unrelated features or infrastructure.
+
+The latest capacity requirement supersedes the earlier rate target: 10,000 successfully committed bookings/second on a suitably sized production deployment, not this laptop. Document sizing assumptions and production acceptance separately from local correctness/load evidence. Do not claim capacity from assumed hardware or weaken exclusivity, validation, or success criteria to reach a rate. No production deployment or infrastructure purchase is authorized by this requirement.
+
+The user approved fixed PostgreSQL role/database defaults (250 ms lock, 2 s statement, 5 s transaction), removing the per-booking setup query. Keep the shared booking deadline and remaining-budget Prisma timeout; treat database limits separately from a strict HTTP deadline. Apply the repeatable SQL configuration to development and isolated test databases without resetting data or changing schema constraints.
+
+Not yet authorized by this follow-up: idempotency, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, notifications, or optional infrastructure. Those require a later explicit approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
 
 The user's existing E-commerce project is **reference material only**. You may inspect its architecture, transaction handling, tests, and NestJS patterns, but must not edit it or transplant its domain assumptions into the scheduler. If asked to review the spec, produce findings and concrete suggested edits; do not implement fixes automatically.
 

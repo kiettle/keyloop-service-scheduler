@@ -4,6 +4,8 @@ export type BookingErrorCode =
   | 'APPOINTMENT_NOT_FOUND'
   | 'BUSINESS_RULE_VIOLATION'
   | 'NO_AVAILABILITY'
+  | 'BOOKING_BUSY'
+  | 'BOOKING_TIMEOUT'
   | 'BOOKING_CONTENTION';
 
 export class BookingError extends Error {

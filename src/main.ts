@@ -3,6 +3,8 @@ import { ConsoleLogger, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { configureHttpServer } from './config/http-server';
+import { Server } from 'node:http';
 import { Environment } from './config/environment';
 
 async function bootstrap(): Promise<void> {
@@ -11,6 +13,7 @@ async function bootstrap(): Promise<void> {
     logger: new ConsoleLogger({ json: true }),
   });
   try {
+    configureHttpServer(app.getHttpServer() as Server);
     app.enableShutdownHooks();
     const config = app.get(ConfigService<Environment, true>);
     await app.listen(config.get('PORT', { infer: true }));

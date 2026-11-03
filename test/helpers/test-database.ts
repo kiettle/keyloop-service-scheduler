@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 
@@ -63,6 +64,10 @@ export async function createTestDatabase() {
       },
     );
     console.log(seedOutput.trim());
+    prisma = createClient(url.toString());
+    await prisma.$executeRawUnsafe(await readFile('scripts/configure-database.sql', 'utf8'));
+    // Role defaults take effect only on new sessions, including replacement pooled connections.
+    await prisma.$disconnect();
     prisma = createClient(url.toString());
     return { prisma, url: url.toString(), close };
   } catch (error) {

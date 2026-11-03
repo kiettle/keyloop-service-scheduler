@@ -6,6 +6,8 @@ import { Server } from 'node:http';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { Clock } from '../../src/common/time/clock';
+import { configureHttpServer } from '../../src/config/http-server';
+import { Environment, validateEnvironment } from '../../src/config/environment';
 import { PrismaService } from '../../src/database/prisma.service';
 import { fixtureIds as id, seedDatabase } from '../../prisma/seed-data';
 
@@ -35,17 +37,18 @@ export interface ErrorJson {
   requestId: string;
 }
 
-export async function createBookingApp(url: string) {
+export async function createBookingApp(url: string, overrides: Partial<Environment> = {}) {
   let app: INestApplication | undefined;
   try {
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(Clock)
       .useValue({ now: () => at('00:00') })
       .overrideProvider(ConfigService)
-      .useValue(new ConfigService({ DATABASE_URL: url, BOOKING_MAX_ATTEMPTS: 4 }))
+      .useValue(new ConfigService({ ...validateEnvironment({ DATABASE_URL: url }), ...overrides }))
       .compile();
     app = module.createNestApplication({ logger: false });
     await app.init();
+    configureHttpServer(app.getHttpServer() as Server);
     const initialized = app;
     return {
       app: initialized,
@@ -81,8 +84,8 @@ export function independentInput(index: number) {
   };
 }
 
-export async function seedIndependentCustomers(prisma: PrismaClient) {
-  const inputs = Array.from({ length: 20 }, (_, i) => independentInput(i));
+export async function seedIndependentCustomers(prisma: PrismaClient, count = 20) {
+  const inputs = Array.from({ length: count }, (_, i) => independentInput(i));
   await prisma.customer.createMany({
     data: inputs.map(({ customerId }) => ({
       id: customerId,

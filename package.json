@@ -23,6 +23,7 @@
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "db:check": "node scripts/check-database.cjs",
+    "db:configure": "docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"' < scripts/configure-database.sql",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate deploy",
@@ -31,7 +32,8 @@
     "test:integration": "vitest run --config vitest.integration.config.mts",
     "test:e2e": "vitest run --config vitest.integration.config.mts test/integration/booking-api.spec.ts",
     "test:concurrency": "vitest run --config vitest.integration.config.mts test/integration/booking-concurrency.spec.ts",
-    "test:all": "npm test && npm run test:integration"
+    "test:all": "npm test && npm run test:integration",
+    "test:load": "ts-node test/load/run-bookings.ts"
   },
   "dependencies": {
     "@nestjs/common": "11.2.8",

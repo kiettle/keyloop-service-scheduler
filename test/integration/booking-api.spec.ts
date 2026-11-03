@@ -8,6 +8,7 @@ import { BookingConflict } from '../../src/appointments/booking.error';
 import { postgresState } from '../../src/appointments/database-error';
 import { Environment } from '../../src/config/environment';
 import { PrismaService } from '../../src/database/prisma.service';
+import { SchedulingRepository } from '../../src/scheduling/scheduling.repository';
 import { createTestDatabase } from '../helpers/test-database';
 import {
   AppointmentJson,
@@ -372,6 +373,8 @@ describe('booking API with migrated PostgreSQL', () => {
         [id.technicianA3, id.technicianA1],
       ].map(([first, second]) =>
         repository.transaction(async (tx) => {
+          // This probe deliberately forms a deadlock; let its detector run before a lock timeout.
+          await tx.$executeRaw`SET LOCAL lock_timeout = '0'`;
           await tx.$queryRaw`SELECT id FROM technicians WHERE id = ${first}::uuid FOR UPDATE`;
           arrivals++;
           if (arrivals === 2) release();
@@ -432,5 +435,55 @@ describe('booking API with migrated PostgreSQL', () => {
     } finally {
       await unavailable.$disconnect();
     }
+  });
+
+  it.each(['catalog', 'resources'] as const)(
+    'reports a real database outage during availability %s reads as 503',
+    async (stage) => {
+      const unavailable = new PrismaService(
+        new ConfigService<Environment, true>({
+          DATABASE_URL: 'postgresql://test:test@127.0.0.1:1/unreachable',
+        }),
+      );
+      const brokenRepository = new SchedulingRepository(unavailable);
+      const repository = application.app.get(SchedulingRepository);
+      // Inject a real connection failure; neither query results nor SQL behavior are mocked.
+      const query =
+        stage === 'catalog'
+          ? vi
+              .spyOn(repository, 'dealershipExists')
+              .mockImplementationOnce((...args) => brokenRepository.dealershipExists(...args))
+          : vi
+              .spyOn(repository, 'findEligibleResources')
+              .mockImplementationOnce((...args) => brokenRepository.findEligibleResources(...args));
+      try {
+        const response = await application.http
+          .get(`/api/v1/dealerships/${id.dealershipA}/availability`)
+          .query({ serviceTypeId: id.oilChange, startAt: bookingInput.startAt })
+          .expect(503);
+        expect((response.body as ErrorJson).error.code).toBe('SERVICE_UNAVAILABLE');
+        expect(response.headers['retry-after']).toBe('1');
+        expect(response.text).not.toContain('127.0.0.1');
+        expect(query).toHaveBeenCalledTimes(1);
+        expect(await prisma.appointment.count()).toBe(0);
+      } finally {
+        await unavailable.$disconnect();
+      }
+    },
+  );
+
+  it('keeps unexpected availability SQL failures as safe 500 errors', async () => {
+    const repository = application.app.get(SchedulingRepository);
+    vi.spyOn(repository, 'findEligibleResources').mockImplementationOnce(async () => {
+      await application.prisma.$queryRaw`SELECT * FROM intentionally_missing_availability_table`;
+      throw new Error('Unreachable');
+    });
+    const response = await application.http
+      .get(`/api/v1/dealerships/${id.dealershipA}/availability`)
+      .query({ serviceTypeId: id.oilChange, startAt: bookingInput.startAt })
+      .expect(500);
+    expect((response.body as ErrorJson).error.code).toBe('INTERNAL_ERROR');
+    expect(response.text).not.toContain('intentionally_missing_availability_table');
+    expect(await prisma.appointment.count()).toBe(0);
   });
 });

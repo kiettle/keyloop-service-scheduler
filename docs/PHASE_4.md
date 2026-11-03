@@ -1,5 +1,7 @@
 # Phase 4 — Booking API and concurrency
 
+> Historical milestone and follow-up review. The later approved conflict-aware insertion/capacity implementation and current verification are in [CONCURRENCY_PROPOSAL.md](CONCURRENCY_PROPOSAL.md).
+
 Date: 2026-11-03, Asia/Ho_Chi_Minh. Scope: booking, retrieval, availability HTTP APIs; atomic confirmation; bounded retries; structured logs; and real PostgreSQL/HTTP/concurrency evidence. Phase 5 and optional features are not started.
 
 ## Review before changes
@@ -111,3 +113,26 @@ The first full rerun passed 84 default tests and 125 of 126 integration tests. C
 After these corrections, build, typecheck, lint, and formatting checks passed. The final `npm run test:all` rerun passed **84 default tests and all 126 PostgreSQL integration tests**, including HTTP and concurrency checks. Schema, migrations, and seed definitions remained unchanged.
 
 The approved Phase 4 definition of done is satisfied by the executed checks above. Phase 5 has not been started.
+
+## Follow-up correctness and simplicity review — 2026-11-03
+
+Reviewed the complete staged Phase 4 changes against SPEC: validation, qualifications/active flags/dealership scoping, full-interval queries, persistence, transaction propagation, retries, safe errors/logs, database constraints, and test isolation. Thin controllers, concrete repositories, the two appointment use cases, and shared scheduling remain appropriate; no structural refactor or new abstraction was needed. Use cases consistently retain `execute`; the optional transaction parameter is named `transactionClient`.
+
+The initial full suite passed (84 default and 126 PostgreSQL tests), but repeating `npm run test:concurrency` exposed an intermittent defect. Repeats 1–2 passed all six cases; repeat 3 failed four cases: CT-01/02/03 timed out at the unchanged 30-second deadline, and the one-attempt race returned two 503s instead of one 201 and one 503. PostgreSQL activity showed 20 waiting transactions, and server logs identified repeated deadlocks while checking appointment exclusions.
+
+Correction: `AppointmentRepository.create` locks the selected technician row, then the bay row, in the same transaction before inserting. All booking attempts follow this order, reducing GiST insert contention. A stale allocation still fails the existing exclusions and rolls back before a fresh retry. The four-attempt default, error classification, both exclusions, and all concurrency assertions remain unchanged. Adjacent bookings can briefly wait on the same resource row but remain valid. No schema/migration/seed changes were made.
+
+Executed after the correction, all with exit 0:
+
+| Command                                               | Observed result                                     |
+| ----------------------------------------------------- | --------------------------------------------------- |
+| `npm run build`                                       | Prisma generation and TypeScript compilation passed |
+| `npm run typecheck`                                   | Passed                                              |
+| `npm run lint`                                        | Passed                                              |
+| `npm run format:check`                                | Passed                                              |
+| `npm run test:all`                                    | 84 default and 126 PostgreSQL tests passed          |
+| `npm run test:concurrency`, three consecutive repeats | Six cases passed on each run                        |
+
+`npm run prisma:validate` also passed during the initial review; the schema was not changed. The PostgreSQL suite includes 49 database, 22 scheduling, 49 actual HTTP/API, and six concurrency tests. Focused repeats select existing cases, not additional coverage. Assertions inspect persisted row counts, references/qualifications, transaction IDs on retries, rollback, and zero resource overlaps. Migrations/seeds are applied to fresh UUID-named test databases. Existing staged changes were preserved; no commit or push was performed.
+
+These results cover the tested local PostgreSQL environment. Sustained production load, multi-host failures, and concurrent administrative changes remain outside the evidence. The required video/final submission preparation remains a separate deliverable; this review does not claim it is complete.

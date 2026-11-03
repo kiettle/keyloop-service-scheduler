@@ -1,7 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { BookingError, DatabaseUnavailable } from '../../appointments/booking.error';
-import { postgresState } from '../../appointments/database-error';
+import { postgresState, translateDatabaseError } from '../../appointments/database-error';
 import { SchedulingError } from '../../scheduling/scheduling.error';
 import { HttpRequest, HttpResponse } from './request-context';
 
@@ -16,6 +16,8 @@ const statusByCode = {
   BUSINESS_RULE_VIOLATION: 422,
   NO_AVAILABILITY: 409,
   BOOKING_CONTENTION: 503,
+  BOOKING_BUSY: 503,
+  BOOKING_TIMEOUT: 503,
 } as const;
 
 @Catch()
@@ -35,7 +37,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
       status = statusByCode[error.code];
       code = error.code === 'SERVICE_TYPE_INACTIVE' ? 'BUSINESS_RULE_VIOLATION' : error.code;
       message = error.message;
-    } else if (error instanceof DatabaseUnavailable) {
+    } else if (translateDatabaseError(error) instanceof DatabaseUnavailable) {
       status = 503;
       code = 'SERVICE_UNAVAILABLE';
       message = 'The service is temporarily unavailable. Please retry later.';

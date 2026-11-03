@@ -10,7 +10,7 @@ One NestJS process, organized as a modular monolith: `AppModule` composes config
 
 The Prisma schema defines Dealership, Customer, Vehicle, ServiceType, Technician, TechnicianQualification, ServiceBay, and Appointment. Reviewed SQL adds CHECK constraints and independent partial GiST exclusions for technician and bay overlaps. See [docs/DATABASE.md](docs/DATABASE.md) for enforcement boundaries, migration risks, fixture IDs, and test evidence. Phase 4 additionally tests allocation and retry behavior through HTTP against PostgreSQL.
 
-`SchedulingModule` owns the shared availability use case and deterministic selection of the smallest eligible technician and bay IDs. Only overlapping `CONFIRMED` appointments block resources; adjacency is allowed. GET availability performs four SQL reads without queries per candidate. Its independent reads provide advisory availability, not a transactionally consistent snapshot or reservation. Booking passes its transaction client into the same use case and queries, revalidating references, ownership, service status, and resource eligibility on every attempt. A `201` is returned only after commit. Exclusion violations and explicit aborted-transaction conflicts can retry in a fresh transaction, up to four total attempts by default.
+`SchedulingModule` owns the shared availability use case and deterministic selection of the smallest eligible technician and bay IDs. Only overlapping `CONFIRMED` appointments block resources; adjacency is allowed. GET availability performs four SQL reads without queries per candidate. Its independent reads provide advisory availability, not a transactionally consistent snapshot or reservation. Booking passes its transaction client into the same use case and queries, revalidating references, ownership, service status, and resource eligibility on every attempt. A `201` is returned only after commit. Booking uses a single-item conflict-aware insert with both exclusions, so unrelated times do not contend on explicit resource-row locks. A skipped resource-conflict insert rolls back and retries; an identifier collision remains an unexpected error. Exclusion violations and explicit aborted-transaction conflicts can retry in a fresh transaction, up to four total attempts by default.
 
 ## Prerequisites and pinned tools
 
@@ -35,6 +35,7 @@ npm run db:up
 npm run prisma:validate
 npm run db:migrate
 npm run db:seed
+npm run db:configure
 npm run db:check
 npm run build
 npm start
@@ -54,7 +55,7 @@ npm run start:dev
 
 `.env` is ignored. Example credentials are disposable local development values, not production credentials. Compose binds PostgreSQL only to `127.0.0.1` and uses its own named volume. Keep `DATABASE_URL` aligned with the `POSTGRES_*` values. URL-encode special characters in database credentials. Changing database credentials in `.env` does not change an already initialized volume; use a fresh database/volume or explicitly administer that database.
 
-`PORT` must be an integer from 1 to 65535; `NODE_ENV` is development, test, or production; `DATABASE_URL` must be a PostgreSQL URL with a host and database. `BOOKING_MAX_ATTEMPTS` defaults to 4 total attempts, with a validated range of 1–10. The Prisma PostgreSQL adapter uses a pool of 10 connections and bounds connection acquisition to five seconds. A booking transaction has a five-second acquisition wait and a ten-second execution limit.
+`PORT` must be an integer from 1 to 65535; `NODE_ENV` is development, test, or production; `DATABASE_URL` must be a PostgreSQL URL with a host and database. `BOOKING_MAX_ATTEMPTS` defaults to 4 total attempts, with a validated range of 1–10. The Prisma PostgreSQL adapter uses a pool of 10 connections and bounds connection acquisition to five seconds. Bookings have a five-second total budget, up to eight active and 128 pending per instance; pending work holds no DB connection. Transaction acquisition waits at most one second or the remaining budget. PostgreSQL uses fixed defaults of five seconds per transaction, 250 ms per lock wait, and two seconds per statement. Prisma's transaction timeout uses the remaining budget at the start of an attempt, with deadline checks inside the callback before commit. Cleanup/network overhead means the overall budget is not a strict HTTP-response deadline. Pool/connection faults are not replayed.
 
 ## Booking API
 
@@ -83,7 +84,7 @@ The oil-change fixture lasts 30 minutes. Demo dates must remain in the future re
 
 Unknown POST/query fields are rejected, including client-supplied technician, bay, duration, end time, or status. UUIDs must be valid; timestamps must include seconds and `Z` or a colon-separated UTC offset, with at most three fractional digits. Invalid dates are rejected rather than normalized. Responses serialize dates in UTC with milliseconds. DTO validation uses pinned `class-validator` 0.14.4 and `class-transformer` 0.5.1 through Nest's standard validation pipe.
 
-Errors consistently use `{ "error": { "code": "...", "message": "..." }, "requestId": "..." }`; validation errors can include a `details` array. HTTP statuses are 400 for malformed input, 404 for missing references, 422 for business rules, 409 for settled unavailability, 503 for unresolved contention or recognized temporary database failure, and 500 for unexpected failures. Every routed response has a server-generated `x-request-id`; error bodies include the same ID. A 503 includes `Retry-After: 1`. SQL statements, connection details, and stack traces are not returned. Availability snapshots never reserve resources.
+Errors consistently use `{ "error": { "code": "...", "message": "..." }, "requestId": "..." }`; validation errors can include a `details` array. HTTP statuses are 400 for malformed input, 404 for missing references, 422 for business rules, 409 for settled unavailability, 503 for unresolved contention or recognized temporary database failure, and 500 for unexpected failures. Admission exhaustion is `503 BOOKING_BUSY`; budget expiration is `503 BOOKING_TIMEOUT`. Every routed response has a server-generated `x-request-id`; error bodies include the same ID. A 503 includes `Retry-After: 1`. SQL statements, connection details, and stack traces are not returned. Availability snapshots never reserve resources.
 
 ## Verification
 
@@ -115,6 +116,8 @@ Each integration file creates a fresh UUID-named database, applies committed mig
 
 Use `npm run db:migrate` and `npm run db:seed` for local development after schema changes. Seed reruns insert missing fixtures without overwriting existing edits or deleting appointments. Do not use `prisma db push` as a replacement for migrations: it cannot reconstruct the SQL-only overlap constraints.
 
+`npm run db:configure` applies fixed PostgreSQL defaults to the Compose application's role in its database: lock timeout 250 ms, statement timeout 2 s, transaction timeout 5 s. It is repeatable and changes no tables or data. Restart the app afterward because existing connections retain their old settings. The SQL is in [scripts/configure-database.sql](scripts/configure-database.sql); run it for the runtime role in a production deployment. The local setup shares that role with CLI tasks, so these limits also apply to subsequent migration/seed sessions using the same identity. Longer maintenance work should use separately configured administrative connections. See [database configuration](docs/DATABASE.md#fixed-database-timeouts).
+
 Formatting is explicit (`npm run format`); lint and format checks do not modify files. Existing assessment documents are excluded from automatic formatting. Foundation history is recorded in [docs/PHASE_1.md](docs/PHASE_1.md), database verification in [docs/PHASE_2.md](docs/PHASE_2.md), scheduling verification in [docs/PHASE_3.md](docs/PHASE_3.md), and booking verification in [docs/PHASE_4.md](docs/PHASE_4.md); results apply only to the documented environment and commands.
 
 Stop the app with Ctrl-C. Stop PostgreSQL without deleting its volume:
@@ -136,3 +139,34 @@ The developer then approved Phase 3 read-only scheduling. AI verified the existi
 For Phase 4, AI first reran all existing tests (49 default / 71 PostgreSQL) and inspected actual exclusion failures. ORM inserts exposed Prisma `P2039` with SQLSTATE `23P01`, whereas the earlier raw-query tests used `P2010`; classification uses the verified underlying SQLSTATE. The developer's approved scope guided three thin HTTP endpoints, shared transaction-aware scheduling queries, and bounded retries. Tests force a genuine allocation race, demonstrate alternate-pair recovery across two app instances, and verify final database invariants. The new tests also exercise rollback, a real deadlock, connection refusal, and retrieval after application restart. A diagnostic seed probe initially lacked the npm binary PATH; it was rerun with that PATH and its disposable database cleaned up. A test instrumentation type error was fixed by exposing an ordinary Promise from the concrete repository's create method; no database behavior was mocked to make the tests pass. Actual command results and limits are recorded in the phase document. The required 5–10 minute demonstration video and later approved phases remain unfinished.
 
 A follow-up simplicity review separated transaction work from the retry loop and removed duplicate HTTP error mapping. Its rerun caught an overly narrow concurrency assertion: PostgreSQL sometimes resolves the forced race with a deadlock (`40P01`/`P2034`), which production already retried correctly. Tests now check both verified conflict outcomes while retaining the database invariants; the corrected race test passed five consecutive focused runs.
+
+## Booking capacity and load verification
+
+The production requirement is **10,000 successfully committed bookings/second on appropriately sized hardware**. It is not yet production-verified. See [production capacity assumptions and acceptance](docs/CAPACITY_PLAN.md). The local test machine is not the production sizing basis; the earlier 1,000-RPS trials remain diagnostic history.
+
+`.env.example` documents `BOOKING_MAX_CONCURRENT` (default 8, range 1–8), `BOOKING_MAX_PENDING` (default 128, range 0–1000), and `BOOKING_TIMEOUT_MS` (default 5000, range 100–30000). A zero pending limit rejects excess work immediately. These per-process limits protect capacity; PostgreSQL still enforces resource exclusivity across instances. A disconnected queued request is removed. An already executing request may still commit, so a lost client acknowledgement remains ambiguous without durable idempotency.
+
+The overall booking budget covers queueing, attempts, and backoff. PostgreSQL's fixed five-second limit applies separately to each transaction and is configured once during database setup. Prisma uses the remaining booking budget per attempt. Cleanup and response delivery can exceed the nominal budget; the database limit is not an exact HTTP-response deadline. No timeout-configuration query is issued for each booking.
+
+The load runner requires **k6 2.3.0** in addition to Node and Docker. It creates its own PostgreSQL database and launches separate Node application processes on ephemeral loopback ports. It never targets a supplied/public URL or resets development data. JSON reports under ignored `artifacts/` include failures, latency, admission/DB samples, and direct SQL invariants. Fixture and connection warmup are described in each report; the default burst uses warm HTTP connections, while the rate profile starts cold and reuses connections thereafter.
+
+```sh
+npm run db:test:up
+k6 version
+npm run test:load -- --mode burst --count 100 --workload spread --report artifacts/burst.json
+npm run test:load -- --mode burst --count 100 --workload same-resource --report artifacts/adjacent.json
+npm run test:load -- --mode burst --count 100 --workload hotspot --report artifacts/hotspot.json
+npm run test:load -- --mode rate --rate 1000 --duration 60 --workload spread --report artifacts/rate.json
+```
+
+The runner accepts `--rate` up to 10000 and `--vus` up to 10000; VUs default to 1000. For a larger generator budget, the following is a **local diagnostic command, not an executed production acceptance test**. This exact 60-second command has not been run:
+
+```sh
+npm run test:load -- --mode rate --rate 10000 --vus 2000 --duration 60 --instances 4 --workload spread --report artifacts/target-10000.json
+```
+
+The successful profile uses distinct intervals across twenty fixture dealerships. Customers/vehicles are synthetic and reused at different intervals; the injected test clock keeps fixtures deterministic. The hotspot profile expects one confirmed row and the remaining requests to receive 409. Overload, dropped arrivals, wrong counts or broken database invariants fail the target profile. Reports distinguish all responses from successful bookings. Latency is measured, with no unagreed production SLO implied. See [concurrency design and evidence](docs/CONCURRENCY_PROPOSAL.md).
+
+Historical local evidence: all final 100-request burst shapes passed; the two-process 500-RPS / 60-second control passed with 30,001 confirmed rows and no errors/overload. The earlier 1,000-RPS minute target **did not pass**, including at four processes. Increasing the bounded pending queue to 256 made latency and dropped arrivals worse, so the default stays 128. A subsequent five-second 10,000-RPS diagnostic also failed, including generator saturation and transport errors. See [all retained results and limitations](docs/LOAD_RESULTS.md). None of these laptop runs proves or disproves capacity on a separately sized production deployment.
+
+The main bootstrap and HTTP fixtures share 65-second HTTP keep-alive / 66-second header-timeout settings. These must be considered alongside actual proxy/client idle limits in deployment. Compiled startup and /health were checked; no deployment or repository publication was performed.

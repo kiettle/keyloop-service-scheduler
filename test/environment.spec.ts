@@ -10,7 +10,31 @@ describe('environment validation', () => {
       PORT: 3000,
       DATABASE_URL: databaseUrl,
       BOOKING_MAX_ATTEMPTS: 4,
+      BOOKING_MAX_CONCURRENT: 8,
+      BOOKING_MAX_PENDING: 128,
+      BOOKING_TIMEOUT_MS: 5000,
     });
+  });
+
+  it.each([
+    ['BOOKING_MAX_CONCURRENT', '0'],
+    ['BOOKING_MAX_CONCURRENT', '9'],
+    ['BOOKING_MAX_PENDING', '-1'],
+    ['BOOKING_MAX_PENDING', '1001'],
+    ['BOOKING_TIMEOUT_MS', '99'],
+    ['BOOKING_TIMEOUT_MS', '30001'],
+    ['BOOKING_MAX_CONCURRENT', true],
+    ['BOOKING_MAX_PENDING', ''],
+    ['BOOKING_TIMEOUT_MS', '500ms'],
+  ])('rejects invalid capacity/budget %s=%p', (key, value) => {
+    expect(() => validateEnvironment({ DATABASE_URL: databaseUrl, [key]: value })).toThrow(key);
+  });
+
+  it('allows disabling the pending queue', () => {
+    expect(
+      validateEnvironment({ DATABASE_URL: databaseUrl, BOOKING_MAX_PENDING: '0' })
+        .BOOKING_MAX_PENDING,
+    ).toBe(0);
   });
 
   it('parses the configured port', () => {

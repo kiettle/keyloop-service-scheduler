@@ -461,6 +461,9 @@ Use one stable format:
 | Vehicle does not belong to customer; service type inactive | 422 | `BUSINESS_RULE_VIOLATION` |
 | No eligible technician/bay for interval | 409 | `NO_AVAILABILITY` |
 | Repeated contention exhausted while availability is indeterminate | 503 | `BOOKING_CONTENTION` |
+| Admission capacity exhausted | 503 | `BOOKING_BUSY` |
+| Overall booking budget expired | 503 | `BOOKING_TIMEOUT` |
+| Recognized temporary database/pool failure | 503 | `SERVICE_UNAVAILABLE` |
 | Unexpected DB / server error | 500 | `INTERNAL_ERROR` |
 
 Do not label a genuine transient database failure as ordinary unavailability. Do not retry bad inputs or permanent rule violations.
@@ -476,9 +479,9 @@ Do not label a genuine transient database failure as ordinary unavailability. Do
 3. Compute `[startAt, endAt)` using `durationMinutes` from the service catalog.
 4. For each attempt, get **fresh** eligible, non-conflicting technician/bay candidates in a stable order.
 5. If either candidate set is empty, stop with `409 NO_AVAILABILITY`.
-6. Select a candidate pair and **atomically** insert a `CONFIRMED` appointment in PostgreSQL.
+6. Select a candidate pair and **atomically** attempt a `CONFIRMED` appointment insert using `ON CONFLICT DO NOTHING RETURNING` with both exclusion constraints unchanged. A skipped insert is not success; detect an unexpected identity collision separately from an allocation conflict.
 7. Commit before returning `201`.
-8. If an exclusion constraint rejects the write because another booking won the race, roll back, start a **new transaction**, re-read candidates, and retry within a small documented limit.
+8. If the insert is skipped for a resource conflict or a verified exclusion/aborted-transaction conflict occurs because another booking won the race, roll back, start a **new transaction**, re-read candidates, and retry within a small documented limit.
 9. If attempts are exhausted solely because of continuing contention and the system cannot determine unavailability, return a clearly retryable `503 BOOKING_CONTENTION` (not a false `409`).
 10. Unexpected database failures follow the error policy and must never produce a success response.
 
@@ -492,6 +495,11 @@ Do not put expensive work or external calls inside the transaction. Prefer short
 - Catch and classify the specific database error (SQLSTATE or verified ORM-mapped error), not arbitrary exceptions.
 - On a failed write, roll back the transaction completely and begin a new attempt; never continue querying in a PostgreSQL transaction already marked aborted.
 - A bounded retry policy (e.g., **maximum four total allocation attempts**) is a starting point. It is not a throughput or fairness guarantee. Implement the limit in one place, test the exhausted path, and document it.
+- The approved concurrency hardening uses conflict-aware insertion rather than explicit technician/bay row locks. Keep both immediate GiST exclusions and verify direct-write rejection independently. The current appointment arbiters are its primary key and the two exclusions; any new unique constraint requires review of skipped-insert classification.
+- Admission is bounded per instance: default **8 active bookings** and **128 pending**, with a ten-connection runtime pool. Queue wait holds no database connection; queued requests are removed on client disconnect. Excess admission returns `503 BOOKING_BUSY`.
+- One monotonic booking budget defaults to **5,000 ms**, including admission, attempts and backoff. Expiration before confirmation returns `503 BOOKING_TIMEOUT`. PostgreSQL 17 uses fixed role/database defaults: **250 ms lock timeout, 2 s statement timeout, 5 s transaction timeout**. Apply scripts/configure-database.sql once during setup; defaults take effect on new connections. There is no per-booking configuration query. Prisma's transaction timeout uses the remaining budget at the start of an attempt, with an acquisition cap of one second. Check the deadline again inside the callback before commit. Fixed database safety limits and the overall booking deadline are separate; cancellation/rollback/commit/network overhead can exceed the nominal request budget. Never return a failure merely because the budget expired after a successful commit.
+- Retry backoff uses jittered 10–30 ms steps with exponential growth, outside a fully rolled-back transaction. No connection is held during backoff. Connection/commit-acknowledgement failures are not automatically replayed.
+- Lock timeout 55P03 is a transaction-contention outcome. Statement cancellation 57014 and transaction timeout 25P04 yield a temporary-service 503 without automatic replay. P2028 is treated as acquisition failure if the callback never started, or BOOKING_TIMEOUT if the callback started and the overall deadline has expired. Unrelated closed-transaction bugs before expiration remain unexpected.
 - Idempotency of repeated **client requests** is separate from contention retries and is P1.
 
 ### 7.3 Why this is not a full production scheduler
@@ -726,6 +734,10 @@ Assumed schedule: configurable per dealership, e.g., **Monday–Saturday, 08:00�
 - Keep write transactions short.
 - Use indexes based on query shape and explain the expected hotspots.
 - No unsubstantiated SLO claims or premature caching.
+
+The approved targets are a **100-request burst** and **10,000 successfully committed bookings/second on a suitably sized production deployment**, with an initial 60-second acceptance window (600,000 scheduled bookings). This supersedes the earlier 1,000-RPS target; retain its measurements as historical local evidence. Hardware sizing is a separate deployment assumption, not a capacity guarantee. Laptop results do not determine production capacity.
+
+Use isolated PostgreSQL data, real HTTP endpoints, separate app processes, and open-model arrival scheduling for the rate test. Report actual offered and successful completion rates, warmup/drain time, dropped iterations, per-status counts, queue/connection/lock pressure, p95/p99, and generator limits. Prepare enough resource/time capacity for all requested bookings and test sold-out contention separately; expected 409s and rejected 503s do not count as successful-booking throughput. Retain failed trials and verify persisted invariants. A configured RPS or burst result is not evidence of sustained capacity. Production verification is outstanding; numeric latency/error SLOs remain to be agreed. See [CAPACITY_PLAN.md](CAPACITY_PLAN.md) for sizing assumptions and the acceptance procedure.
 
 ### NFR-04 — Observability
 

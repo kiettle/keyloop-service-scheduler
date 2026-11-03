@@ -3,7 +3,8 @@ import { PrismaClient } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { fixtureIds as id } from '../../prisma/seed-data';
 import { AppointmentRepository } from '../../src/appointments/appointment.repository';
-import { postgresState } from '../../src/appointments/database-error';
+import { BookingConflict } from '../../src/appointments/booking.error';
+import { translateDatabaseError } from '../../src/appointments/database-error';
 import { SchedulingRepository } from '../../src/scheduling/scheduling.repository';
 import { EligibleResources } from '../../src/scheduling/resource-allocation.service';
 import { createTestDatabase } from '../helpers/test-database';
@@ -154,7 +155,7 @@ describe('concurrent HTTP bookings across two app instances', () => {
     expect(new Set(race.observations.slice(0, 2).map((o) => o.backend)).size).toBe(2);
     expect(race.errors.length).toBeGreaterThan(0);
     for (const error of race.errors) {
-      expect(['23P01', '40P01']).toContain(postgresState(error));
+      expect(translateDatabaseError(error)).toBeInstanceOf(BookingConflict);
     }
     await assertDatabaseInvariants(1);
   });
@@ -177,7 +178,7 @@ describe('concurrent HTTP bookings across two app instances', () => {
       expect(observation.resources.serviceBayIds.toSorted()).toEqual([id.bayA1, id.bayA2]);
     }
     expect(race.errors).toHaveLength(1);
-    expect(['23P01', '40P01']).toContain(postgresState(race.errors[0]));
+    expect(translateDatabaseError(race.errors[0])).toBeInstanceOf(BookingConflict);
     expect(race.observations).toHaveLength(3);
     expect(new Set(race.observations.map((o) => o.transactionId)).size).toBe(3);
     expect(new Set(race.observations.slice(0, 2).map((o) => o.backend)).size).toBe(2);

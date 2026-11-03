@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { performance } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { BookingCapacity } from '../../src/appointments/booking-capacity';
+import { validateEnvironment } from '../../src/config/environment';
 import { AppointmentRepository } from '../../src/appointments/appointment.repository';
 import { BookingConflict, DatabaseUnavailable } from '../../src/appointments/booking.error';
 import { CreateAppointmentUseCase } from '../../src/appointments/create-appointment.use-case';
@@ -11,6 +15,8 @@ import {
   CheckAvailabilityUseCase,
 } from '../../src/scheduling/check-availability.use-case';
 import { SchedulingError } from '../../src/scheduling/scheduling.error';
+
+vi.mock('node:timers/promises', () => ({ setTimeout: vi.fn(() => Promise.resolve()) }));
 
 const input = {
   customerId: 'customer',
@@ -67,9 +73,15 @@ describe('booking orchestration', () => {
     module = await Test.createTestingModule({
       providers: [
         CreateAppointmentUseCase,
+        BookingCapacity,
         { provide: AppointmentRepository, useValue: repository },
         { provide: CheckAvailabilityUseCase, useValue: availability },
-        { provide: ConfigService, useValue: new ConfigService({ BOOKING_MAX_ATTEMPTS: 4 }) },
+        {
+          provide: ConfigService,
+          useValue: new ConfigService(
+            validateEnvironment({ DATABASE_URL: 'postgresql://localhost/unit' }),
+          ),
+        },
       ],
     }).compile();
     useCase = module.get(CreateAppointmentUseCase);
@@ -205,5 +217,35 @@ describe('booking orchestration', () => {
       throw new Error('Commit failed');
     });
     await expect(useCase.execute(input)).rejects.toThrow('Commit failed');
+  });
+  it('backs off only after a failed transaction has finished rollback', async () => {
+    let activeTransaction = false;
+    repository.transaction.mockImplementationOnce(async (operation) => {
+      activeTransaction = true;
+      try {
+        return await operation({} as Prisma.TransactionClient);
+      } finally {
+        activeTransaction = false;
+      }
+    });
+    repository.create.mockRejectedValueOnce(new BookingConflict('resource'));
+    vi.mocked(delay).mockImplementationOnce(() => {
+      expect(activeTransaction).toBe(false);
+      return Promise.resolve();
+    });
+    expect(await useCase.execute(input)).toEqual(persisted);
+    expect(delay).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start another transaction after the total deadline expires', async () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    repository.create.mockImplementationOnce(() => {
+      now.mockReturnValue(6001);
+      return Promise.reject(new BookingConflict('resource'));
+    });
+    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'BOOKING_TIMEOUT' });
+    expect(repository.transaction).toHaveBeenCalledTimes(1);
+    expect(delay).not.toHaveBeenCalled();
+    expect(module.get(BookingCapacity).counts.active).toBe(0);
   });
 });
