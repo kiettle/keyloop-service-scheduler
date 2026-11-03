@@ -3,12 +3,14 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnvironment } from './config/environment';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
+import { SchedulingModule } from './scheduling/scheduling.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
     DatabaseModule,
     HealthModule,
+    SchedulingModule,
   ],
 })
 export class AppModule {}

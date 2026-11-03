@@ -1,6 +1,6 @@
 # Database and domain model
 
-Phase 2 implements persistence only. There are no booking/availability APIs, allocation algorithms, application retries, cancellation workflows, or administrative endpoints. The only HTTP endpoint remains `/health`.
+Phase 2 introduced persistence and database constraints. [Phase 3](PHASE_3.md) adds read-only eligibility queries and deterministic candidate selection. There are no booking/availability APIs, reservations, application retries, cancellation workflows, or administrative endpoints. The only HTTP endpoint remains `/health`.
 
 ## Model and relationships
 
@@ -44,7 +44,7 @@ Risks and limitations:
 - Adding exclusions to an existing populated table can fail on overlapping data and take locks during index construction. This initial migration targets a clean schema. Future data repair/migration plans must be reviewed separately.
 - Prisma's schema does not express these CHECK/exclusion definitions. Committed SQL migrations are essential; `db push`, or rebuilding solely from the Prisma model, is insufficient. Tests apply actual migrations rather than mirroring the constraints in mocks.
 - Exclusion conflicts can wait on another transaction. The observed raw-query error is Prisma `P2010`, with PostgreSQL SQLSTATE in `meta.driverAdapterError.cause.originalCode` (`23P01` for exclusion). The message identifies the named constraint. This shape is specific to the pinned Prisma/adapter versions and raw-query path; ORM model-write errors must be verified when booking is implemented.
-- Concurrent database writes can also deadlock (`40P01`). This phase adds no retries or resource-selection policy. A future booking operation must classify errors narrowly, roll back, and retry in a new transaction within a bounded policy.
+- Concurrent database writes can also deadlock (`40P01`). Database constraints add no retries or resource-selection policy; Phase 3's advisory candidate selection does not reserve resources. A future booking operation must classify errors narrowly, roll back, and retry in a new transaction within a bounded policy.
 - Database constraints guarantee resource non-overlap; they do not provide request idempotency, fair resource allocation, or complete business validation.
 
 ## Deterministic reference fixtures
