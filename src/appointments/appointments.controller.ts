@@ -1,10 +1,20 @@
 import { Body, Controller, Get, Param, Post, Req, Res } from '@nestjs/common';
+import {
+  ApiCreatedResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ApiErrorResponseDto } from '../common/http/api-error.dto';
+import { AppointmentResponseDto } from './appointment-response.dto';
 import { HttpRequest, HttpResponse } from '../common/http/request-context';
 import { AppointmentParamsDto, CreateAppointmentDto } from './create-appointment.dto';
 import { CreateAppointmentUseCase } from './create-appointment.use-case';
 import { GetAppointmentUseCase } from './get-appointment.use-case';
 
 @Controller('api/v1/appointments')
+@ApiTags('Appointments')
 export class AppointmentsController {
   constructor(
     private readonly createAppointment: CreateAppointmentUseCase,
@@ -12,6 +22,47 @@ export class AppointmentsController {
   ) {}
 
   @Post()
+  @ApiOperation({
+    summary: 'Confirm an appointment',
+    description:
+      'Assigns resources automatically. Returns success only after commit. Unknown input fields are rejected.',
+  })
+  @ApiCreatedResponse({
+    type: AppointmentResponseDto,
+    description: 'Committed CONFIRMED appointment.',
+  })
+  @ApiResponse({
+    status: 400,
+    type: ApiErrorResponseDto,
+    description: 'VALIDATION_ERROR: malformed, missing, or forbidden fields.',
+  })
+  @ApiResponse({
+    status: 404,
+    type: ApiErrorResponseDto,
+    description:
+      'CUSTOMER_NOT_FOUND, VEHICLE_NOT_FOUND, DEALERSHIP_NOT_FOUND, or SERVICE_TYPE_NOT_FOUND.',
+  })
+  @ApiResponse({
+    status: 409,
+    type: ApiErrorResponseDto,
+    description: 'NO_AVAILABILITY: no eligible technician/bay pair remains.',
+  })
+  @ApiResponse({
+    status: 422,
+    type: ApiErrorResponseDto,
+    description: 'INVALID_BOOKING_TIME or BUSINESS_RULE_VIOLATION.',
+  })
+  @ApiResponse({
+    status: 503,
+    type: ApiErrorResponseDto,
+    description:
+      'BOOKING_BUSY, BOOKING_TIMEOUT, BOOKING_CONTENTION, or SERVICE_UNAVAILABLE; Retry-After: 1.',
+  })
+  @ApiResponse({
+    status: 500,
+    type: ApiErrorResponseDto,
+    description: 'INTERNAL_ERROR: unexpected failure; no database details exposed.',
+  })
   async create(
     @Body() input: CreateAppointmentDto,
     @Req() request: HttpRequest,
@@ -34,6 +85,16 @@ export class AppointmentsController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Retrieve a persisted appointment' })
+  @ApiOkResponse({ type: AppointmentResponseDto })
+  @ApiResponse({
+    status: 400,
+    type: ApiErrorResponseDto,
+    description: 'VALIDATION_ERROR: malformed identifier.',
+  })
+  @ApiResponse({ status: 404, type: ApiErrorResponseDto, description: 'APPOINTMENT_NOT_FOUND.' })
+  @ApiResponse({ status: 503, type: ApiErrorResponseDto, description: 'SERVICE_UNAVAILABLE.' })
+  @ApiResponse({ status: 500, type: ApiErrorResponseDto, description: 'INTERNAL_ERROR.' })
   get(@Param() params: AppointmentParamsDto) {
     return this.getAppointment.execute(params.id);
   }

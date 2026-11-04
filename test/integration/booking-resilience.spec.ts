@@ -11,7 +11,13 @@ import { BookingConflict, DatabaseUnavailable } from '../../src/appointments/boo
 import { postgresState } from '../../src/appointments/database-error';
 import { validateEnvironment } from '../../src/config/environment';
 import { createTestDatabase } from '../helpers/test-database';
-import { at, bookingInput, createBookingApp, resetBookingFixtures } from '../helpers/booking-app';
+import {
+  at,
+  bookingInput,
+  createBookingApp,
+  ErrorJson,
+  resetBookingFixtures,
+} from '../helpers/booking-app';
 
 function deferred() {
   let resolve!: () => void;
@@ -178,6 +184,62 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     ).rejects.toMatchObject({ code: 'P2028' });
     expect(await database.prisma.appointment.count()).toBe(0);
   });
+
+  it.each([
+    { endpoint: 'availability', table: 'dealerships' },
+    { endpoint: 'availability', table: 'appointments' },
+    { endpoint: 'appointment', table: 'appointments' },
+  ])(
+    'returns safe 503 for read-side lock timeout: $endpoint GET / $table',
+    async ({ endpoint, table }) => {
+      const appointment = await repository.transaction((tx) => repository.create(data(), tx));
+      const path =
+        endpoint === 'availability'
+          ? `/api/v1/dealerships/${id.dealershipA}/availability`
+          : `/api/v1/appointments/${appointment.id}`;
+      const query =
+        endpoint === 'availability'
+          ? { serviceTypeId: id.oilChange, startAt: bookingInput.startAt }
+          : {};
+      const before = await application.http.get(path).query(query).expect(200);
+      const count = await database.prisma.appointment.count();
+      const locked = deferred();
+      const release = deferred();
+      const holder = database.prisma.$transaction(async (tx) => {
+        if (table === 'dealerships') {
+          await tx.$executeRaw`LOCK TABLE dealerships IN ACCESS EXCLUSIVE MODE`;
+        } else {
+          await tx.$executeRaw`LOCK TABLE appointments IN ACCESS EXCLUSIVE MODE`;
+        }
+        locked.resolve();
+        await release.promise;
+      });
+
+      try {
+        // Also propagate acquisition failure instead of waiting indefinitely for the barrier.
+        await Promise.race([locked.promise, holder]);
+        const response = await application.http.get(path).query(query).expect(503);
+        const body = response.body as ErrorJson;
+        expect(body.requestId).toEqual(expect.any(String));
+        expect(response.body).toEqual({
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'The service is temporarily unavailable. Please retry later.',
+          },
+          requestId: body.requestId,
+        });
+        expect(response.headers['retry-after']).toBe('1');
+        expect(response.headers['x-request-id']).toBe(body.requestId);
+      } finally {
+        release.resolve();
+        await holder;
+      }
+
+      const recovered = await application.http.get(path).query(query).expect(200);
+      expect(recovered.body).toEqual(before.body);
+      expect(await database.prisma.appointment.count()).toBe(count);
+    },
+  );
 
   it('rejects excess admission with 503 while read-only availability stays responsive', async () => {
     const config = application.app.get(ConfigService);

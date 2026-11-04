@@ -11,8 +11,8 @@ Build a reviewable, reliable **backend-only** submission for **Keyloop Technical
 
 If sources disagree, report the conflict rather than silently resolving it. Separate **Keyloop requirements**, **proposed assumptions**, and **optional enhancements**.
 
-## Current mode: PHASE 4 BOOKING API & CONCURRENCY APPROVED
-The user has approved Phases 1–3 and Phase 4 booking APIs and concurrency. Use `docs/SPEC.md` as the specification, subject to this explicit phase boundary.
+## Current mode: PHASE 5 FINAL REVIEW & SUBMISSION PREPARATION APPROVED
+The user has approved Phases 1–4 and Phase 5 final review, testing, documentation, and submission preparation. Use `docs/SPEC.md` as the specification, subject to this explicit phase boundary.
 
 Allowed: backend NestJS/TypeScript scaffolding, PostgreSQL Docker Compose, Prisma configuration and connection lifecycle, validated environment variables, `.env.example`, `GET /health`, tests, linting/formatting, setup/verification documentation, the eight specified Prisma models, reviewed SQL migrations and constraints, deterministic seeds, real PostgreSQL integration tests, service interval calculation, resource eligibility reads, deterministic candidate selection, and an internal availability use case.
 
@@ -20,11 +20,13 @@ Phase 4 additionally allows POST /api/v1/appointments, GET /api/v1/appointments/
 
 The user additionally approved production-oriented booking concurrency hardening: conflict-aware insertion with existing exclusions, bounded admission and request/database time budgets, jittered fresh-transaction retries, cancellation of queued requests, and isolated 100-request burst / 1,000-RPS load verification. Keep the current architecture and preserve staged changes. This does not authorize unrelated features or infrastructure.
 
-The latest capacity requirement supersedes the earlier rate target: 10,000 successfully committed bookings/second on a suitably sized production deployment, not this laptop. Document sizing assumptions and production acceptance separately from local correctness/load evidence. Do not claim capacity from assumed hardware or weaken exclusivity, validation, or success criteria to reach a rate. No production deployment or infrastructure purchase is authorized by this requirement.
+The current assessment resilience criterion is a 100-request burst: with sufficient eligible resource/time capacity, all 100 valid requests confirm; with one technician and one bay at an identical interval, exactly one confirms and 99 receive availability conflicts. Preserve the mandatory 20-request regression and direct database invariant checks. Sustained 1,000 successfully committed bookings/second is an unverified future stretch goal, not a submission requirement or an assertion about Keyloop traffic. Preserve historical measurements and failed trials with their source/environment limitations. The former 10,000-bookings/second requirement is withdrawn; references to it belong only in explicitly labeled history. Keep the single-PostgreSQL architecture and existing safeguards. Do not claim capacity from assumed hardware or weaken exclusivity, validation, or success criteria to reach a rate. No production deployment or infrastructure purchase is authorized.
 
 The user approved fixed PostgreSQL role/database defaults (250 ms lock, 2 s statement, 5 s transaction), removing the per-booking setup query. Keep the shared booking deadline and remaining-budget Prisma timeout; treat database limits separately from a strict HTTP deadline. Apply the repeatable SQL configuration to development and isolated test databases without resetting data or changing schema constraints.
 
-Not yet authorized by this follow-up: idempotency, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, notifications, or optional infrastructure. Those require a later explicit approval. Review and planning for later phases remain read-only. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
+Phase 5 additionally allows requirements/code/database audits, fixes for demonstrated defects with regression tests, pinned Swagger UI/OpenAPI documentation, final design/README/demo/review documents, and isolated fresh-install verification. Preserve staged changes. Do not automatically commit, push, or record a video.
+
+Not authorized: optional business features, idempotency, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, CI, notifications, or additional infrastructure. Do not advance beyond Phase 5. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
 
 The user's existing E-commerce project is **reference material only**. You may inspect its architecture, transaction handling, tests, and NestJS patterns, but must not edit it or transplant its domain assumptions into the scheduler. If asked to review the spec, produce findings and concrete suggested edits; do not implement fixes automatically.
 

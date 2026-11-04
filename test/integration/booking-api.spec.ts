@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
+import { OpenAPIObject, SchemaObject } from '@nestjs/swagger';
 import { fixtureIds as id } from '../../prisma/seed-data';
 import { AppointmentRepository } from '../../src/appointments/appointment.repository';
 import { BookingConflict } from '../../src/appointments/booking.error';
@@ -41,6 +42,117 @@ describe('booking API with migrated PostgreSQL', () => {
     } finally {
       await database?.close();
     }
+  });
+
+  async function apiDocument() {
+    const response = await application.http.get('/docs-json').expect(200);
+    return response.body as OpenAPIObject;
+  }
+
+  function schema(document: OpenAPIObject, name: string): SchemaObject {
+    const result = document.components?.schemas?.[name];
+    if (!result || '$ref' in result) throw new Error(`Missing concrete schema ${name}`);
+    return result;
+  }
+
+  it('serves the Swagger UI and local initialization script', async () => {
+    const html = await application.http.get('/docs/').expect(200).expect('Content-Type', /html/);
+    expect(html.text).toContain('Keyloop API documentation');
+    expect(html.text).toContain('swagger-ui-init.js');
+    await application.http.get('/docs/swagger-ui-init.js').expect(200);
+  });
+
+  it('documents exactly the accepted booking fields and unchanged API routes', async () => {
+    const document = await apiDocument();
+    expect(Object.keys(document.paths).toSorted()).toEqual([
+      '/api/v1/appointments',
+      '/api/v1/appointments/{id}',
+      '/api/v1/dealerships/{dealershipId}/availability',
+      '/health',
+    ]);
+    const booking = schema(document, 'CreateAppointmentDto');
+    const fields = ['customerId', 'dealershipId', 'serviceTypeId', 'startAt', 'vehicleId'];
+    expect(booking.required?.toSorted()).toEqual(fields);
+    expect(Object.keys(booking.properties ?? {}).toSorted()).toEqual(fields);
+    expect(booking.additionalProperties).toBe(false);
+    expect(booking.properties?.customerId).toMatchObject({ type: 'string', format: 'uuid' });
+    expect(booking.properties?.startAt).toMatchObject({
+      type: 'string',
+      format: 'date-time',
+    });
+    expect(booking.properties?.startAt).toHaveProperty('pattern');
+    expect(Object.keys(document.paths['/api/v1/appointments'].post!.responses).toSorted()).toEqual([
+      '201',
+      '400',
+      '404',
+      '409',
+      '422',
+      '500',
+      '503',
+    ]);
+    const temporaryFailure = document.paths['/api/v1/appointments'].post!.responses['503'];
+    expect(temporaryFailure).toHaveProperty('description', expect.stringContaining('BOOKING_BUSY'));
+    expect(temporaryFailure).toHaveProperty(
+      'description',
+      expect.stringContaining('BOOKING_TIMEOUT'),
+    );
+  });
+
+  it('documents public appointment/availability responses and required query parameters', async () => {
+    const document = await apiDocument();
+    const appointment = schema(document, 'AppointmentResponseDto');
+    expect(Object.keys(appointment.properties ?? {}).toSorted()).toEqual([
+      'createdAt',
+      'customerId',
+      'dealershipId',
+      'endAt',
+      'id',
+      'serviceBayId',
+      'serviceTypeId',
+      'startAt',
+      'status',
+      'technicianId',
+      'vehicleId',
+    ]);
+    expect(appointment.properties?.startAt).toMatchObject({ type: 'string', format: 'date-time' });
+    const availability = schema(document, 'AvailabilityResponseDto');
+    expect(Object.keys(availability.properties ?? {}).toSorted()).toEqual([
+      'available',
+      'availableServiceBayCount',
+      'availableTechnicianCount',
+      'dealershipId',
+      'endAt',
+      'serviceTypeId',
+      'startAt',
+    ]);
+    const operation = document.paths['/api/v1/dealerships/{dealershipId}/availability'].get!;
+    expect(operation.responses['503']).toHaveProperty(
+      'description',
+      expect.stringContaining('SERVICE_UNAVAILABLE'),
+    );
+    expect(operation.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'dealershipId', in: 'path', required: true }),
+        expect.objectContaining({ name: 'serviceTypeId', in: 'query', required: true }),
+        expect.objectContaining({ name: 'startAt', in: 'query', required: true }),
+      ]),
+    );
+    expect(schema(document, 'ApiErrorResponseDto').required?.toSorted()).toEqual([
+      'error',
+      'requestId',
+    ]);
+    expect(schema(document, 'ApiErrorDetailsDto').required?.toSorted()).toEqual([
+      'code',
+      'message',
+    ]);
+  });
+
+  it('does not reserve or change appointments when documentation is requested', async () => {
+    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    const before = await prisma.appointment.findMany();
+    await apiDocument();
+    await application.http.get('/docs/').expect(200);
+    expect(await prisma.appointment.findMany()).toEqual(before);
   });
 
   it('returns 201 only for a persisted confirmed booking and retrieves it after app restart', async () => {

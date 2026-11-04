@@ -1,55 +1,245 @@
 # System design — Keyloop Unified Service Scheduler
 
-## Architecture and technologies
+## 1. Problem overview
 
-The backend is a NestJS/TypeScript modular monolith with PostgreSQL and Prisma. Docker Compose supplies a development database and a separate disposable test database service. This keeps deployment and review straightforward while letting PostgreSQL enforce invariants across application instances. Package versions and the lockfile are pinned; there is no frontend, authentication system, Redis, Kafka, or distributed lock service.
+Replace manual dealership service booking with a backend that assigns a qualified technician and a service bay for the entire requested service interval, then persists a confirmed appointment. The original Keyloop Scenario A defines those three capabilities; the detailed policies below are documented implementation assumptions.
 
-`AppointmentsModule` owns booking/retrieval controllers, application orchestration, the concrete persistence repository, and database error classification. `SchedulingModule` owns the availability controller, shared availability use case, candidate queries, deterministic selector, and pure interval utilities. `DatabaseModule` owns the Prisma connection lifecycle. Shared HTTP infrastructure supplies DTO validation, request correlation, structured logs, and safe error responses. `HealthModule` exposes process liveness at `/health`.
+## 2. Functional requirements
 
-Controllers perform transport conversion and call use cases. DTO validation uses [Nest's standard validation pipe](https://docs.nestjs.com/techniques/validation). The code uses concrete repositories rather than generic repository interfaces or a Clean Architecture framework. The scheduling use case accepts an optional Prisma transaction client, an intentional small coupling that lets booking reuse identical SQL predicates inside its transaction. Domain interval functions remain independent of Nest and Prisma. The injectable clock makes future-time rules deterministic in tests.
+The caller supplies customer, vehicle, dealership, service type, and desired start. The backend validates references/ownership, derives duration, selects eligible resources, and commits a complete appointment. Retrieval proves persistence; availability is read-only. [FINAL_REVIEW.md](FINAL_REVIEW.md) maps Keyloop requirements, SPEC P0 capabilities, acceptance criteria, and submission gates to executed evidence.
 
-## Data model and rules
+## 3. Non-functional requirements
 
-Eight models represent dealerships, customers, vehicles, service types, technicians, explicit technician qualifications, bays, and appointments. Resources belong to one dealership; vehicles belong to customers. Service types are global, with a positive integer duration and active flag. All active bays support every service in the MVP. Appointments retain their scheduled interval even if the catalog changes later.
+Correct resource exclusivity across app instances, atomic writes, understandable code, reproducible setup, bounded failures, safe errors, and meaningful tests take priority. Keep the 100-request burst resilience criterion; 1,000 successfully committed bookings/second is an unverified future stretch goal, not a submission requirement or a verified Keyloop traffic need. Historical local diagnostics and future benchmarking guidance are recorded in [LOAD_RESULTS](LOAD_RESULTS.md) and [CAPACITY_PLAN](CAPACITY_PLAN.md), with no current-source or production capacity or latency SLO claim.
 
-PostgreSQL enforces required fields, foreign keys, unique VINs/qualification pairs, positive duration, and `startAt < endAt`. Two independent partial GiST exclusions protect each technician and each bay using `tstzrange(start_at, end_at, '[)')`; only CONFIRMED appointments block. `btree_gist` provides UUID equality. Half-open intervals permit adjacency. Prisma alone cannot express the exclusions/CHECKs, so committed SQL migrations are required. See [DATABASE.md](DATABASE.md).
+## 4. Assumptions and scope
 
-Ownership, active flags, qualifications, matching dealership, future time, and catalog-derived duration are application rules. Ordinary foreign keys only establish reference existence. Reference data is controlled through seeds, with no concurrent administrative API in P0. There is no vehicle-level overlap rule or idempotency guarantee.
+- Backend-only modular monolith; Swagger and cURL supply the client demonstration.
+- Service types are global; catalog durations are positive integral minutes. All active bays support all services.
+- Resources belong to one dealership. Technicians must be active and service-qualified; bays must be active.
+- Only CONFIRMED blocks resources. Intervals are half-open `[startAt, endAt)`; adjacency is permitted.
+- Starts must be future instants with an explicit offset. Input uses seconds and at most three fractional digits; comparisons use absolute timestamps.
+- Reference data is seeded, with no concurrent administrative API. Existing appointments retain their stored intervals after catalog changes.
+- No cancellation/rescheduling API, vehicle-overlap exclusion, idempotency, hours/shifts, authentication, frontend, or notifications.
 
-## Booking data flow and concurrency
+## 5. Architecture
 
-1. The HTTP validation pipe rejects malformed/missing fields, invalid UUIDs/calendar timestamps, missing offsets, excessive precision, and client-supplied assignment/duration/end/status.
-2. The create use case begins an interactive READ COMMITTED transaction. It validates customer/vehicle existence and ownership and invokes shared scheduling with that transaction client.
-3. Scheduling validates dealership and active service type, checks a strictly future start with the clock, computes end using absolute elapsed minutes, and selects active eligible resources with no CONFIRMED overlap. Queries use `existing.startAt < requested.endAt AND existing.endAt > requested.startAt` for the full interval.
-4. The selector picks the smallest technician ID and bay ID independently. Because bays are interchangeable, any eligible pair is valid. Two set-based candidate queries avoid N+1 queries.
-5. The repository attempts one complete CONFIRMED row using conflict-aware insertion with both exclusions. A skipped insert rolls back as an allocation conflict; a primary-key collision is checked separately. There are no explicit resource-row locks. The controller returns 201 only after the transaction Promise resolves. GET retrieves the public fields from PostgreSQL, including all relationship IDs.
-6. A concurrent insert can invalidate the initial reads. PostgreSQL rejects overlapping resource assignments. After rollback, verified exclusion/deadlock/serialization conflicts may start a fresh transaction, re-read current candidates, and choose alternatives. Four total attempts is the default and configurable limit.
-7. Empty candidates mean 409. Exhausted conflict attempts without a fresh exhaustion determination mean retryable 503. Unexpected errors remain 500. Recognized connection failures yield 503 without replay because a commit acknowledgement may be lost.
+```mermaid
+flowchart TB
+  Client["Swagger UI / cURL / HTTP tests"]
+  subgraph App["NestJS modular monolith"]
+    HTTP["DTO validation / request IDs / error filter"]
+    Bookings["AppointmentsModule: booking and retrieval"]
+    Scheduling["SchedulingModule: availability and resource selection"]
+    Health["HealthModule: process liveness"]
+    Prisma["DatabaseModule: PrismaService / pool of 10"]
+    HTTP --> Bookings
+    HTTP --> Scheduling
+    HTTP --> Health
+    Bookings -->|shared availability| Scheduling
+    Bookings --> Prisma
+    Scheduling --> Prisma
+  end
+  Client --> HTTP
+  Prisma --> PG[("PostgreSQL 17.6")]
+```
 
-The transaction API and explicit write-conflict retry handling follow the [Prisma 7 transaction documentation](https://docs.prisma.io/docs/orm/v7/prisma-client/queries/transactions); the exclusion error's actual adapter shape is separately verified by local PostgreSQL tests.
+## 6. Component responsibilities
 
-Availability GET invokes the same scheduling use case outside a booking transaction. It returns interval/counts/boolean and creates no rows or holds. Independent reads can become stale immediately, so a prior availability result is never trusted as a reservation.
+Controllers handle transport and call use cases. AppointmentsModule owns confirmation/retrieval orchestration and persistence. SchedulingModule owns the shared availability algorithm and deterministic selection. DatabaseModule owns connection lifecycle. Common HTTP infrastructure supplies validation, safe errors, and correlated logs. `/health` is process liveness; it does not query PostgreSQL on every request.
 
-## Alternatives and trade-offs
+Repositories are concrete classes, with no generic repository framework. An optional Prisma transaction client passes through the shared scheduling use case into every query. This small coupling keeps booking and advisory availability on one algorithm. Pure interval functions remain independent of Nest/Prisma; the injectable clock makes time validation deterministic in tests.
 
-- Read-then-insert without exclusions and in-memory locks were rejected because they permit double booking across processes. Optimistic version columns alone would require correctly coordinating both resources and all write paths; range exclusions directly enforce the requested invariant, including direct SQL writes.
-- READ COMMITTED plus both exclusions enforces exclusivity. A temporary resource-row-lock fix addressed observed plain-INSERT deadlock storms, then the approved conflict-aware insert replaced it so unrelated intervals can proceed without that row serialization. PostgreSQL still performs index/FK locking internally; fixed role/database wait/statement/transaction timeouts bound this work. SERIALIZABLE would still need conflict handling.
-- Stable ID ordering is reproducible and easy to review. It can concentrate contention and does not optimize fairness. Bounded retries handle small races, with an explicit 503 path under sustained contention.
-- A single appointment row atomically represents both assignments. There is no separate reservation table or hold-expiration workflow.
-- Input precision is limited to milliseconds to match Date and timestamptz(3), avoiding silently truncated scheduling boundaries. Timezone calendars and working hours are outside the MVP; comparisons use absolute instants.
+## 7. Entity relationships
 
-## Observability, errors, and operations
+```mermaid
+erDiagram
+  Dealership ||--o{ Technician : owns
+  Dealership ||--o{ ServiceBay : owns
+  Dealership ||--o{ Appointment : hosts
+  Customer ||--o{ Vehicle : owns
+  Customer ||--o{ Appointment : requests
+  Vehicle ||--o{ Appointment : receives
+  ServiceType ||--o{ Appointment : defines
+  Technician ||--o{ TechnicianQualification : has
+  ServiceType ||--o{ TechnicianQualification : requires
+  Technician ||--o{ Appointment : performs
+  ServiceBay ||--o{ Appointment : accommodates
+  Dealership {
+    uuid id PK
+    string name
+    string timeZone
+  }
+  Customer {
+    uuid id PK
+    string name
+  }
+  Vehicle {
+    uuid id PK
+    uuid customerId FK
+    string vin UK
+    string make
+    string model
+  }
+  ServiceType {
+    uuid id PK
+    int durationMinutes
+    boolean isActive
+  }
+  Technician {
+    uuid id PK
+    uuid dealershipId FK
+    boolean isActive
+  }
+  TechnicianQualification {
+    uuid technicianId PK, FK
+    uuid serviceTypeId PK, FK
+  }
+  ServiceBay {
+    uuid id PK
+    uuid dealershipId FK
+    boolean isActive
+  }
+  Appointment {
+    uuid id PK
+    uuid customerId FK
+    uuid vehicleId FK
+    uuid dealershipId FK
+    uuid serviceTypeId FK
+    uuid technicianId FK
+    uuid serviceBayId FK
+    timestamptz startAt
+    timestamptz endAt
+    string status
+  }
+```
 
-Nest's JSON console logger emits request and booking events: processing, confirmation, unavailability, conflict, retry, and unexpected failure. Server-generated request IDs appear in logs, `x-request-id`, and error bodies. Booking logs include dealership/service, appointment ID on success, outcome, elapsed duration, and retry count where applicable. Customer names, VINs, request payloads, SQL, credentials, and raw database messages are not logged by these handlers. Unexpected failures record the error type and available SQLSTATE for correlation.
+The diagram omits creation/update timestamps for readability. UUIDs, restrictive foreign keys, and `timestamptz(3)` are implemented in the actual migration. VIN is unique; the qualification pair is a composite primary key. See [DATABASE.md](DATABASE.md).
 
-The common filter provides machine-readable 400/404/409/422/500/503 responses and safe validation details; retryable 503 responses include Retry-After. `/health` is process liveness. Prisma checks PostgreSQL at startup and disconnects on shutdown. Connection pools are bounded at ten connections. Database setup configures fixed role/database defaults of 250 ms lock, 2 s statement, and 5 s transaction timeout, inherited on new connections. There is no per-booking configuration round trip. Interactive transactions use Prisma's remaining-budget timeout, a one-second acquisition cap, and callback deadline checks. Fixed server limits and the overall booking deadline are distinct; cleanup and commit/response overhead can exceed the nominal request budget. A per-instance BookingCapacity gate admits eight active bookings and up to 128 waiting, removes disconnected/expired waiters, and leaves two of the ten pool connections for other operations. Retries back off only after rollback; total budget defaults to five seconds. Admission/budget exhaustion maps to explicit retryable 503 codes. No external work occurs inside booking transactions.
+## 8. Booking sequence
 
-Deployment to a managed host must verify extension/DDL permissions and use suitable credentials/configuration. No production-host verification or performance numbers are claimed. A transport failure during commit can produce an ambiguous complete outcome; exactly-once client requests require separately approved idempotency work. Current retry behavior does not solve fairness, administrative mutation, authentication, or availability guarantees.
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant H as Controller / validation
+  participant U as CreateAppointmentUseCase
+  participant A as BookingCapacity
+  participant S as Shared scheduling
+  participant R as AppointmentRepository
+  participant DB as PostgreSQL
+  C->>H: POST five booking fields
+  H->>H: Validate UUIDs, timestamp, allowed fields
+  H->>U: Parsed input, requestId, disconnect signal
+  U->>A: Acquire slot using shared deadline
+  A-->>U: Admit, queue, or reject with 503
+  Note over U,A: Only admitted requests enter booking attempts
+  loop At most BOOKING_MAX_ATTEMPTS (default 4)
+    U->>R: Begin fresh READ COMMITTED transaction
+    R->>DB: BEGIN
+    U->>DB: Load customer/vehicle using transaction
+    U->>S: Validate time, dealership, service and derive interval
+    S->>DB: Query active qualified technicians and active bays
+    S-->>U: Deterministic pair or unavailable
+    alt No eligible pair
+      U->>R: Reject attempt
+      R->>DB: ROLLBACK
+      U-->>H: 409 NO_AVAILABILITY
+    else Pair selected
+      U->>R: Create complete CONFIRMED appointment
+      R->>DB: INSERT ON CONFLICT DO NOTHING RETURNING
+      Note over R,DB: Both exclusion constraints remain active
+      alt Insert and commit succeed
+        R->>DB: COMMIT
+        R-->>U: Committed record
+        U-->>H: Appointment
+        H-->>C: 201
+      else Skipped resource insert or recognized transaction conflict
+        R->>DB: ROLLBACK
+        R-->>U: Classified conflict
+        Note over U,DB: Backoff after rollback, next attempt uses fresh allocation and transaction
+      end
+    end
+  end
+  U->>A: Release slot in finally
+  Note over U,H: Exhausted conflicts return 503 and unexpected failures return 500
+```
 
-## Verification and design-phase AI usage
+The loop describes bounded attempts; success, validation failure, or settled unavailability exits immediately. No success response precedes commit.
 
-Unit tests exercise pure time/selection rules, orchestration, validation outcomes, retry limits, fresh transaction contexts, and error classification. PostgreSQL integration tests apply the real migration and seed to isolated newly created databases. HTTP tests use the real AppModule and PrismaService, verify rollback and retrieval after app restart, and never substitute mocked database results. Two app instances with independent pools exercise actual contested writes, alternate-pair recovery, resource bottlenecks, adjacent intervals, and final SQL overlap/reference invariants. See [PHASE_4.md](PHASE_4.md) for executed commands, counts, and exact scope limitations.
+## 9. Availability algorithm
 
-The developer selected the scope and requested critical design/simplicity reviews. AI assisted with analysis of interval constraints, transactional allocation/retries, implementation, test design, and documentation. Actual ORM error probes changed classification from assumptions about generic Prisma codes to verified SQLSTATEs. Developer questions led to simpler date validation and extra time-boundary coverage. The README's AI Collaboration Narrative and phase records describe actual corrections and verification, without invented mistakes or performance claims. The required demonstration video and later phases remain unfinished.
+Validate future time, dealership existence, and an active service type. Compute `endAt = startAt + durationMinutes * 60_000`. Two set-based queries select IDs from the requested dealership: technicians require qualification and active status; bays require active status. Both exclude CONFIRMED appointments satisfying:
 
-The approved concurrency decision, known limits, and current isolated load evidence are recorded in [CONCURRENCY_PROPOSAL.md](CONCURRENCY_PROPOSAL.md). The implemented load runner uses k6 with separate Node app processes, reports both rate and burst results, and validates persisted counts and resource invariants. It does not establish a universal production-capacity guarantee.
+```text
+existing.startAt < requested.endAt AND existing.endAt > requested.startAt
+```
+
+The lowest technician and bay IDs form the pair. Counts and a boolean are returned publicly; internal candidate IDs are omitted from GET availability. Four SQL reads are used regardless of candidate count. Ordinary GET reads are independent and may become stale immediately. Booking invokes the same logic with its transaction client and never trusts a previous GET.
+
+## 10. Concurrency and transactions
+
+Every attempt uses one short Prisma interactive READ COMMITTED transaction: validate references and ownership, run shared scheduling, and attempt one complete row with single-item createManyAndReturn/skipDuplicates (PostgreSQL ON CONFLICT DO NOTHING RETURNING). Both exclusions remain active. A skipped insert is not success: an existing generated ID indicates an unexpected identity collision; otherwise the current schema's only other arbiters are the two resource exclusions, so it becomes a resource conflict. New appointment unique constraints require revisiting this classification.
+
+There are no explicit resource-row locks. Earlier selected-resource locking addressed plain-insert deadlock storms but serialized unrelated intervals sharing a resource; the approved conflict-aware insert replaced it. A candidate can still become stale before insertion. The whole attempt rolls back before fresh allocation, and direct writes remain protected by PostgreSQL exclusions.
+
+Default: four total attempts, configurable from 1–10, with jittered backoff outside the transaction. Empty candidates return 409; unresolved conflict exhaustion returns 503. Connection failures are not replayed because a lost commit acknowledgement can have an unknown complete outcome. A per-process gate admits eight active bookings and 128 waiting by default; excess admission is BOOKING_BUSY. Queued disconnects/expiry free queue entries. An already running operation may commit despite client disconnect.
+
+All attempts share one monotonic booking budget, default five seconds, including queueing/backoff. Transaction acquisition waits at most one second or the remaining budget. Prisma's transaction timeout uses the remaining budget at attempt start, with callback deadline checks before completion. Database setup separately configures fixed role/database defaults of 250 ms lock, 2 s statement, and 5 s transaction timeout; new connections inherit them. No per-booking configuration SQL is issued. Cleanup/commit/network overhead can exceed the nominal budget. See [DATABASE](DATABASE.md#fixed-database-timeouts); no external work occurs inside transactions.
+
+## 11. Constraints and indexes
+
+PostgreSQL enforces NOT NULL, reference FKs, unique VIN/qualification identity, positive service duration, and `startAt < endAt`. Separate immediate partial GiST exclusions enforce technician and bay non-overlap with `tstzrange(start_at, end_at, '[)')`, filtered to CONFIRMED. `btree_gist` supplies UUID equality. Committed SQL is essential; Prisma schema/db push cannot reconstruct these constraints.
+
+Resource dealership/active indexes, qualification keys, appointment FK indexes, and a dealership/start index support access paths. Eligibility uses parameterized tstzrange overlap predicates matching the partial GiST expressions. Earlier diagnostic overlap-probe plans are recorded in LOAD_RESULTS; they do not establish every production query plan. Eligibility, ownership, active flags, and catalog-derived duration are application rules; ordinary FKs establish existence only.
+
+## 12. API contracts
+
+| Route                                                | Success | Purpose                                                                                 |
+| ---------------------------------------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `POST /api/v1/appointments`                          | 201     | Five input fields; assigned resource IDs, derived interval, CONFIRMED status, createdAt |
+| `GET /api/v1/appointments/:id`                       | 200     | Persisted public appointment fields and relationship IDs                                |
+| `GET /api/v1/dealerships/:dealershipId/availability` | 200     | Service/time query; interval, counts, boolean; no write                                 |
+| `GET /health`                                        | 200     | `{ "status": "ok" }`                                                                    |
+| `GET /docs`, `GET /docs-json`                        | 200     | Swagger UI and generated OpenAPI contract                                               |
+
+Swagger uses explicit DTO/controller metadata through a shared setup function in production and HTTP tests. No compiler plugin or business API change was introduced. The [demo guide](DEMO_GUIDE.md) provides executable requests.
+
+## 13. Technologies and trade-offs
+
+NestJS provides modules, DI, validation, filters, and test support; TypeScript keeps contracts explicit. PostgreSQL provides transactional relational integrity and range exclusions across app instances. Prisma provides typed queries, with reviewed SQL for unsupported constraints. Vitest/SWC preserve Nest constructor metadata. Docker Compose supports reproducible local databases. Exact versions and the lockfile make upgrades deliberate; `npm ci` reproduces the resolved dependency graph.
+
+An in-memory mutex or availability read alone cannot protect multiple instances. SERIALIZABLE isolation still requires conflict handling; global dealership/resource-row locks serialize unrelated intervals. Conflict-aware insertion with independent exclusions directly enforces resource exclusivity. The in-memory admission gate protects local capacity, while PostgreSQL protects correctness across instances. Stable ID ordering is easy to review but does not optimize fairness. No cache or additional service is justified without measurements.
+
+## 14. Reliability and errors
+
+Verified ORM exclusion errors carry Prisma `P2039` and underlying SQLSTATE `23P01`; raw SQL uses `P2010`. Classification reads adapter metadata, not message text or every generic `P2039`. Explicit `40P01`, `40001`, `55P03`, or Prisma `P2034` indicate transaction contention. Statement cancellation `57014` and transaction timeout `25P04` become temporary-service failures without replay. Raw-query connection refusal may use DatabaseNotReachable adapter metadata without a SQLSTATE. P2028 before callback entry is acquisition failure; after entry and overall deadline expiration it is BOOKING_TIMEOUT. Unrelated closed-transaction bugs stay unexpected.
+
+Malformed input is 400; missing entities 404; settled unavailability 409; invalid future time/ownership/inactive-service rules 422; admission/deadline/contention or recognized temporary database failure 503; unexpected failures 500. Availability uses the same safe temporary/unexpected database policy. Error bodies are `{ error: { code, message, details? }, requestId }`, with safe DTO details only. Retryable responses include Retry-After. Startup verifies `SELECT 1`; shutdown disconnects the pool.
+
+## 15. Performance and scalability
+
+Queries are set-based, with no per-candidate N+1 queries. Availability materializes candidate IDs and sorts them; large deployments should measure query plans and candidate-set size. Short transactions, bounded admission, deadlines, and ten-connection pools limit resource use. Keep the modular monolith and one PostgreSQL writer; app instances share its exclusions, and total pools must fit the database connection budget. A 100-request burst must yield 100 confirmations with sufficient eligible resource/time capacity, or one confirmation and 99 availability conflicts for a single contested pair/interval, with exact persisted counts, valid assignments, zero overlaps, and no overload or technical failures. The mandatory 20-request regression remains. Separate-process local diagnostics are historical; sustained 1,000 successful bookings/second remains an unverified stretch goal. CAPACITY_PLAN describes future benchmarking based on measured bottlenecks, without requiring database distribution or speculative hardware sizing. Fairness, representative-data tuning, and production telemetry remain future work.
+
+## 16. Observability
+
+Implemented: JSON console logs with request IDs; booking start, confirmation, admission rejection, unavailability, conflict/retry, duration, and unexpected failure events. Fields include dealership/service, appointment ID on success, outcome, elapsed/queue-wait milliseconds, retry count, admission counts on rejection, and available SQLSTATE. Names, VINs, request payloads, SQL, credentials, and raw database errors are omitted by these handlers. Request IDs appear in headers and error bodies.
+
+Proposed production metrics: bookings by outcome, latency distribution, conflict/retry frequency, exhausted attempts, and pool saturation. Tracing could connect request/allocation/transaction spans when operational needs justify it. No metrics backend, trace exporter, collector, dashboard, or monitoring stack is implemented.
+
+## 17. Security
+
+This is an unauthenticated local assessment demo. Production needs identity, dealership authorization, rate limits, TLS/secret management, and a restricted migration/runtime role strategy. Strict DTO whitelisting rejects client assignments/duration/status and unknown properties. Prisma queries use bound values; the two test-only raw identifier statements interpolate only internally generated database names. Swagger is openly available for review. Dependency audits and repository checks are recorded with their scope in FINAL_REVIEW; they are not a complete security assessment.
+
+## 18. Known limitations
+
+No exactly-once request guarantee: a transport failure during commit may leave an unknown complete outcome. Repeated client requests may create distinct bookings, including for the same vehicle. Advisory availability is not a transactionally consistent snapshot. Concurrent administrative changes are not supported. Concurrency suites use two app instances in one process; load diagnostics additionally use separate Node processes on one host. Multi-host/network faults, hosted extension permissions, populated-data migration locks, production load, and the future 1,000-successful-bookings/second stretch goal remain unverified.
+
+## 19. Potential production improvements
+
+Prioritize authenticated authorization, durable idempotency, controlled reference-data updates, and operational metrics based on actual deployment needs. Working hours, cancellation, shifts, fairness, and specialized bays need separately agreed rules and tests. These are proposals; none is promised or implemented in this submission phase.
+
+## 20. AI use during design
+
+The developer selected Scenario A, backend scope, stack, Vitest, phased approvals, and simplicity constraints. AI assisted requirement interpretation, model/constraint alternatives, transaction/error strategy, implementation, tests, and documentation. The developer challenged guards, abstractions, relationships, and package choices; actual PostgreSQL and HTTP checks supplied evidence.
+
+Real corrections include startup connectivity/metadata issues, Prisma error-shape assumptions, a race test that assumed only exclusion errors, temporary resource locking followed by approved conflict-aware insertion, and moving fixed timeouts out of each transaction. This merge resolved an older Phase 5 stash against commit 40352a1, preserving the current business implementation while restoring Swagger and submission documents. [README](../README.md#ai-collaboration-narrative) summarizes all stages; historical phase notes, LOAD_RESULTS, and [FINAL_REVIEW](FINAL_REVIEW.md) distinguish observed results from assumptions. The video remains a manual deliverable.

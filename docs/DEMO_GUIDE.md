@@ -1,0 +1,147 @@
+# Demo guide and video outline
+
+Use the local assessment setup. No video has been recorded by the agent. Complete command execution and remaining handoff items are recorded in [FINAL_REVIEW.md](FINAL_REVIEW.md).
+
+## 1. Start the application
+
+On a new checkout, follow [README](../README.md#first-installation). Preserve an existing `.env`.
+
+```sh
+cp .env.example .env
+npm ci
+npm run prisma:generate
+npm run db:up
+npm run prisma:validate
+npm run db:migrate
+npm run db:seed
+npm run db:configure
+npm run db:check
+npm run build
+npm start
+```
+
+Keep this terminal running. Use a second terminal at the project root for the remaining commands. Default application URL is localhost:3000; set BASE_URL differently if PORT was changed. Repeating this demo uses a new future interval, not a database reset.
+
+## 2. Health and API documentation
+
+```sh
+export BASE_URL="${BASE_URL:-http://localhost:3000}"
+curl --fail --silent --show-error "$BASE_URL/health"
+curl --fail --silent --show-error --output /dev/null "$BASE_URL/docs/"
+curl --fail --silent --show-error --output /dev/null "$BASE_URL/docs-json"
+```
+
+Expect health JSON `{ "status": "ok" }` and successful documentation responses. Open `$BASE_URL/docs` in the browser: Appointments, Availability, and Health are documented. Explain the five POST fields, server-derived assignments/duration, and status/error schemas. View the UI before issuing the cURL demo; executing additional POSTs in Swagger at the same interval would consume resources.
+
+## 3. Generate a future interval and check availability
+
+```sh
+export DEMO_START="$(node -e 'console.log(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString())')"
+export DEMO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/keyloop-demo.XXXXXX")"
+printf 'Demo interval starts at %s\n' "$DEMO_START"
+
+curl --fail --silent --show-error --get \
+  "$BASE_URL/api/v1/dealerships/10000000-0000-4000-8000-000000000001/availability" \
+  --data-urlencode 'serviceTypeId=40000000-0000-4000-8000-000000000001' \
+  --data-urlencode "startAt=$DEMO_START"
+```
+
+With unchanged seed data and an unused interval, expect available=true, two qualified technicians, two bays, and a 30-minute duration. This is an advisory result, not a reservation. Catalog edits or other bookings can change the counts; use a clean setup or explain existing data rather than resetting a development volume.
+
+## 4. Create and retrieve a confirmed appointment
+
+Define a small shell helper that produces the five accepted fields using the seed ID patterns. Arguments are customer number and vehicle number, not arbitrary resource IDs.
+
+```sh
+booking_payload() {
+  node - "$1" "$2" <<'NODE'
+const suffix = (value) => String(value).padStart(12, '0');
+console.log(JSON.stringify({
+  customerId: `20000000-0000-4000-8000-${suffix(process.argv[2])}`,
+  vehicleId: `30000000-0000-4000-8000-${suffix(process.argv[3])}`,
+  dealershipId: '10000000-0000-4000-8000-000000000001',
+  serviceTypeId: '40000000-0000-4000-8000-000000000001',
+  startAt: process.env.DEMO_START,
+}));
+NODE
+}
+
+booking_payload 1 1 > "$DEMO_DIR/request.json"
+curl --fail-with-body --silent --show-error \
+  "$BASE_URL/api/v1/appointments" \
+  -H 'Content-Type: application/json' \
+  --data-binary "@$DEMO_DIR/request.json" \
+  --output "$DEMO_DIR/created.json" --write-out 'HTTP %{http_code}\n'
+cat "$DEMO_DIR/created.json"
+
+export APPOINTMENT_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).id)' "$DEMO_DIR/created.json")"
+curl --fail --silent --show-error "$BASE_URL/api/v1/appointments/$APPOINTMENT_ID"
+```
+
+Expect HTTP 201, CONFIRMED, technician A1 and bay A1, a server-computed end 30 minutes after start, and all association IDs. GET returns the same persisted public record. Automated tests additionally shut down/recreate the app and retrieve that row again.
+
+## 5. Consume the alternative pair and show a conflict
+
+Customer 2 owns vehicle 3; customer 3 owns vehicle 4. Both use dealership A in this demo because vehicles/customers have no dealership-specific ownership restriction.
+
+```sh
+booking_payload 2 3 > "$DEMO_DIR/request.json"
+curl --fail-with-body --silent --show-error \
+  "$BASE_URL/api/v1/appointments" -H 'Content-Type: application/json' \
+  --data-binary "@$DEMO_DIR/request.json" --write-out '\nHTTP %{http_code}\n'
+
+booking_payload 3 4 > "$DEMO_DIR/request.json"
+curl --silent --show-error \
+  "$BASE_URL/api/v1/appointments" -H 'Content-Type: application/json' \
+  --data-binary "@$DEMO_DIR/request.json" --write-out '\nHTTP %{http_code}\n'
+
+curl --fail --silent --show-error --get \
+  "$BASE_URL/api/v1/dealerships/10000000-0000-4000-8000-000000000001/availability" \
+  --data-urlencode 'serviceTypeId=40000000-0000-4000-8000-000000000001' \
+  --data-urlencode "startAt=$DEMO_START"
+```
+
+Expect a second 201 with technician A3 / bay A2, then 409 NO_AVAILABILITY with a request ID. Final availability is false with both counts zero. The earlier true availability result did not guarantee another booking. Error responses do not expose SQL. Concurrency/API tests verify the failed operation leaves no additional appointment.
+
+## 6. Demonstrate actual concurrent protection and tests
+
+In the project terminal, ensure TEST_DATABASE_URL from `.env.example` exists in `.env`, then:
+
+```sh
+npm run db:test:up
+npm run test:concurrency
+npm run test:e2e
+npm run test:all
+```
+
+These tests own separate fresh databases; they do not clear the two demo bookings.
+
+Explain the assertions, not just the green output:
+
+- CT-01 sends twenty independent requests across two app instances: one 201, nineteen 409, one confirmed PostgreSQL row.
+- CT-02 forces both requests to read the same free candidates: both must commit with distinct pairs, and transaction IDs prove a fresh retry.
+- Technician and bay bottlenecks each allow one booking; concurrent adjacent intervals allow both.
+- An intentionally one-attempt race returns retryable 503 instead of false NO_AVAILABILITY.
+- Direct SQL checks count persisted rows, validate references/qualifications/duration, and reject any technician or bay overlap.
+- Conflict-aware insertion avoids explicit resource-row locks. Both database exclusions remain active and reject direct writes that bypass the booking application. A skipped resource-conflict insert rolls back before fresh allocation and retry.
+
+Show source for the two named exclusions, the conflict-aware insert, and the bounded retry loop. Explain `409` settled shortage versus `503` overload, expired budget, unresolved contention, or temporary database failure. Use actual current test output; the focused suites are subsets of test:all, not additional unique cases.
+
+## 7. Video outline — approximately 8–9 minutes
+
+| Time      | Content                                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------- |
+| 0:00–0:45 | Introduce yourself, Scenario A, and backend-only scope                                                  |
+| 0:45–2:00 | Architecture/ER diagrams, modules, qualifications and durations                                         |
+| 2:00–3:30 | Half-open ranges, both exclusions, conflict-aware insertion, transaction commit and fresh retries       |
+| 3:30–6:00 | Swagger, availability, create/retrieve, alternative pair and 409; show concurrency assertions/results   |
+| 6:00–7:30 | AI collaboration: developer direction, real error probes, review findings, verification and corrections |
+| 7:30–8:30 | Trade-offs, limitations, what you learned, and remaining production work                                |
+
+Use genuine examples: startup connectivity validation, Prisma SQLSTATE metadata, a test that incorrectly assumed only exclusion errors, and the progression from temporary resource locks to approved conflict-aware insertion and fixed database timeouts. State what you personally decided and can explain. Do not present proposed telemetry, idempotency, authentication, production throughput, or a recorded video as implemented.
+
+For the interview, explain the 100-request burst as a resilience test: enough eligible resource/time capacity yields 100 confirmations; one technician and bay at an identical interval yields one confirmation and 99 availability conflicts. Exact persisted counts, valid assignments, and zero overlaps matter; overload or technical failures fail these profiles. The mandatory 20-request regression remains. Requests launch from a client barrier, with actual launch spread reported. The per-process queue bounds active work; PostgreSQL exclusions enforce exclusivity across instances. Explicit resource-row locks were replaced by conflict-aware insertion and bounded fresh-transaction retries.
+
+Describe 1,000 successful bookings/second as an unverified future stretch goal, not submission acceptance or a verified Keyloop traffic requirement. Historical 100-request bursts and the 500-RPS minute control passed on earlier snapshots; the 1,000-RPS minute trials failed. Refer to [LOAD_RESULTS](LOAD_RESULTS.md) for source/configuration limitations. No load tests were rerun for the 2026-11-04 documentation-only goal revision, and no current-source or production capacity is established. Keep the architecture simple and improve it only when measurements justify the change.
+
+Before submitting: record the actual 5–10 minute video, check its link/access, include every source/test/document file in your final Git commit, push it, and verify reviewer access. These manual handoff steps are not performed automatically.

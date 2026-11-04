@@ -6,6 +6,7 @@ import { AppModule } from './app.module';
 import { configureHttpServer } from './config/http-server';
 import { Server } from 'node:http';
 import { Environment } from './config/environment';
+import { setupSwagger } from './config/swagger';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, {
@@ -14,6 +15,7 @@ async function bootstrap(): Promise<void> {
   });
   try {
     configureHttpServer(app.getHttpServer() as Server);
+    setupSwagger(app);
     app.enableShutdownHooks();
     const config = app.get(ConfigService<Environment, true>);
     await app.listen(config.get('PORT', { infer: true }));

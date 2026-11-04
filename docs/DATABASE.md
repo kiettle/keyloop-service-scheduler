@@ -1,6 +1,6 @@
 # Database and domain model
 
-Phase 2 introduced persistence and database constraints. Phase 3 added read-only eligibility queries and deterministic candidate selection. [Phase 4](PHASE_4.md) adds booking/retrieval/availability APIs, atomic confirmation, and bounded conflict retries using the unchanged schema and exclusions. Cancellation and administrative write APIs remain unimplemented.
+Phase 2 introduced persistence and database constraints. Phase 3 added read-only eligibility queries and deterministic candidate selection. [Phase 4](PHASE_4.md) adds booking/retrieval/availability APIs, atomic confirmation, and bounded conflict retries. The approved follow-up uses conflict-aware insertion, bounded capacity/deadlines, and fixed role/database timeout defaults. Phase 5 adds Swagger and submission documentation while retaining that implementation and both exclusions. Cancellation and administrative write APIs remain unimplemented.
 
 ## Model and relationships
 

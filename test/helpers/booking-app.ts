@@ -9,6 +9,7 @@ import { Clock } from '../../src/common/time/clock';
 import { configureHttpServer } from '../../src/config/http-server';
 import { Environment, validateEnvironment } from '../../src/config/environment';
 import { PrismaService } from '../../src/database/prisma.service';
+import { setupSwagger } from '../../src/config/swagger';
 import { fixtureIds as id, seedDatabase } from '../../prisma/seed-data';
 
 export const at = (time: string) => new Date(`2035-01-15T${time}:00.000Z`);
@@ -47,6 +48,7 @@ export async function createBookingApp(url: string, overrides: Partial<Environme
       .useValue(new ConfigService({ ...validateEnvironment({ DATABASE_URL: url }), ...overrides }))
       .compile();
     app = module.createNestApplication({ logger: false });
+    setupSwagger(app);
     await app.init();
     configureHttpServer(app.getHttpServer() as Server);
     const initialized = app;

@@ -1,6 +1,6 @@
 # Booking load verification — 2026-11-03
 
-The latest requirement is 10,000 successfully committed bookings/second on a suitably sized production deployment. All results in this document are local diagnostics, not production capacity measurements. See [CAPACITY_PLAN.md](CAPACITY_PLAN.md) for the requirement, sizing assumptions, and outstanding production acceptance.
+Current goal revision — 2026-11-04: retain the 100-request burst resilience criterion; treat 1,000 successfully committed bookings/second as an unverified future stretch goal, not submission acceptance. The former 10,000-bookings/second requirement is withdrawn. All measurements and executed-command records below are historical local diagnostics from their stated source/configuration snapshots, not current-source or production capacity measurements. No load tests were rerun for this documentation-only revision. See [CAPACITY_PLAN.md](CAPACITY_PLAN.md) for evidence boundaries and future benchmarking.
 
 The production-oriented concurrency implementation is verified functionally. **The sustained 1,000-RPS performance target is NOT MET on the measured laptop configuration.** Default two-process capacity passed the 500-RPS / 60-second control; all final 100-request burst shapes passed. No rate failure is treated as a pass.
 
@@ -89,9 +89,9 @@ Executed against the reviewed working files (all final commands exited 0):
 
 The concurrency suite retained exact one-success/nineteen-conflict assertions, enforced alternate-pair recovery in fresh transactions, and direct persisted-state checks for zero resource overlaps and valid assignments. No assertions were weakened. The minute-long load profiles were not repeated for this maintenance change; the earlier 1,000-RPS target failure remains unresolved and must not be presented as production capacity. These checks do not establish behavior under concurrent administrative edits, commit-acknowledgement loss, or a production deployment; those limitations remain documented.
 
-## Subsequent 10,000-RPS local diagnostic
+## Historical diagnostic under the withdrawn 10,000-RPS target
 
-Before the developer clarified that the target applies to separately sized production hardware, executed:
+Under the former target, before the developer clarified that it applied to separately sized production hardware, executed:
 
 ```sh
 npm run test:load -- --mode rate --rate 10000 --duration 5 --instances 4 --workload spread --report artifacts/rate-spread-10000-5-baseline.json

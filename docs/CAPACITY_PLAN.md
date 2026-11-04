@@ -1,64 +1,41 @@
-# Production capacity requirement — 10,000 bookings/second
+# Booking resilience, evidence, and future capacity
 
-Status: **required, not production-verified**. The developer specified successful bookings on sufficiently provisioned production hardware. Local laptop measurements establish neither the required hardware nor a production throughput ceiling. This target does not change the coding challenge's business behavior.
+Status — 2026-11-04: **keep the 100-request burst resilience criterion**. Sustained **1,000 successfully committed bookings/second is an unverified future stretch goal**, not submission acceptance or a verified Keyloop traffic requirement. Historical decision: the former 10,000-bookings/second requirement is withdrawn. This revision changes documentation only; no load tests were rerun and no new capacity evidence is claimed.
 
-## Workload and success definition
+## Assessment resilience criterion
 
-- 10,000 valid booking POSTs/second, each yielding a committed CONFIRMED appointment and HTTP 201. Availability reads, 409s, and 503s do not count toward this target.
-- Start with a separate warmup followed by a 60-second measurement window: at least 600,000 scheduled booking requests. Report actual successful completions during that window separately from responses completed during drain. A growing backlog or a long drain must not be presented as sustained throughput.
-- Supply enough qualified technicians, bays, and distinct future intervals for every request. An identical interval with one resource pair can yield only one successful booking, regardless of hardware. Run sold-out/hotspot tests separately.
-- Exercise the actual API, validation, service duration, allocation, transaction commit, and both PostgreSQL exclusions. No bypass, asynchronous acceptance response, or disabled validation/constraints is permitted.
-- Use a declared dealership/resource distribution and representative appointment history. The local runner's synthetic fixtures are a reproducible diagnostic workload, not an agreed production dataset.
-- Initial strict acceptance: all scheduled requests launched, every booking successful, no technical errors or overload rejections, and no resource/association invariant violations. Report p95/p99. A production latency SLO and longer soak duration still need agreement.
+- Release 100 independent valid HTTP booking requests from a client barrier; report actual launch spread rather than claiming exact simultaneity.
+- With enough qualified technicians, active bays, and distinct eligible resource/time capacity, require 100 HTTP 201 responses and exactly 100 persisted CONFIRMED appointments. The spread and same-resource/non-overlapping-interval profiles exercise this case.
+- With one eligible technician and one active bay at an identical interval, require exactly one HTTP 201, 99 HTTP 409 availability conflicts, and one persisted CONFIRMED appointment. This is the hotspot profile.
+- Both profiles require valid ownership, dealership, qualification, active flags, catalog-derived intervals, zero technician/bay overlaps, and no overload or technical failures. Keep the mandatory 20-request exact one-confirmation/nineteen-conflict regression and the alternative-pair/fresh-transaction tests.
+- Use isolated PostgreSQL fixtures and the actual HTTP validation/allocation/commit path. An availability read is not a reservation. Burst success does not establish sustained throughput or production capacity.
+
+## Evidence and limitations
+
+[LOAD_RESULTS.md](LOAD_RESULTS.md) preserves measured source/configuration details, executed commands, successes, and failed trials. On the earlier measured laptop snapshots, all final 100-request burst shapes passed. The two-process 500-RPS / 60-second control recorded 30,001 confirmations and persisted rows with no overload/errors. The 1,000-RPS minute trials failed their strict target, including the four-process trial with 59,478 confirmations and 523 overload responses.
+
+Those results used synthetic fixtures and shared-host generators, apps, and PostgreSQL; they are neither current-source benchmarks nor production capacity measurements. Subsequent maintenance and timeout changes were not followed by sustained-rate reruns. Historical failed diagnostics under the withdrawn target remain in LOAD_RESULTS; they are not submission blockers and must not be relabeled as passes.
 
 ## Keep the current architecture
 
-Run multiple independent copies of the same NestJS modular monolith behind the deployment's HTTP load balancer, sharing one PostgreSQL writer. Node processes provide application CPU capacity; adding CPU cores to a single application process is not itself a sizing plan. PostgreSQL remains the final source of resource exclusivity across all copies. No Redis, Kafka, distributed locks, or booking microservices are necessary to describe this initial deployment.
+Keep the NestJS/Prisma modular monolith and one PostgreSQL writer. Database exclusion constraints enforce technician and bay exclusivity across app instances. Conflict-aware insertion, bounded fresh-transaction retries, shared deadlines, and commit-before-success remain. Explicit resource-row locks were replaced; the per-process admission gate protects workload rather than guaranteeing resource exclusivity.
 
-The per-process gate remains eight active bookings, 128 pending, and a ten-connection pool. These are process limits, not global limits. A queue absorbs a short burst; it does not supply missing sustainable capacity. Keep admission, request budgets, fresh-transaction retries, and commit-before-success. Do not increase queue size or database connections solely to make a benchmark appear to pass.
+Defaults remain eight active booking operations, 128 pending, and a ten-connection pool per process. A short burst can wait in the bounded queue; this does not supply missing sustainable capacity. Do not increase queue size or pool limits merely to make a benchmark pass. No database distribution, duplication, additional infrastructure, or deployment is required by this goal revision.
 
-No load balancer, cluster manager, database configuration, or external deployment has been added by this capacity plan.
+## Future stretch investigation
 
-## Calculate capacity from measured service costs
+This is optional future work, not a remaining submission requirement:
 
-Let R be successful bookings/second. Use mean times, not p95, in these calculations. Retry work must be included.
+1. Record source/configuration, hardware, process count, dataset/history size, resource/interval distribution, and logging behavior. Use isolated data, the real HTTP path, and unchanged validation and exclusions. Keep sold-out contention separate from successful-booking throughput.
+2. Establish a control at an observed sustainable rate, then increase offered arrivals toward 1,000/second using open-model scheduling. Separate warmup, a 60-second initial measurement window, and drain. Report offered starts and successful completions during the window separately from drain completions; a growing backlog is not sustained throughput. This is not an endurance/soak test.
+3. Measure generator limits, dropped arrivals, per-status counts, p95/p99, queue/pool pressure, transaction duration, retries, CPU, query plans, WAL/storage, and lock waits. Measure database connection-holding time separately from time in the admission queue. Production latency SLOs remain unagreed.
+4. For a strict stretch pass, launch all scheduled arrivals, with no dropped work, overload, or technical failures, and establish at least 1,000 successful commits/second during the measured window without a growing backlog. Availability reads, 409s, 503s, or completions deferred into drain do not satisfy the goal. Reconcile persisted counts after quiescence and verify all database invariants. Retain failed reports and investigate ambiguous acknowledgements.
+5. Optimize only demonstrated bottlenecks, one change at a time, with correctness regressions preserved. Measure round trips, query/index costs, transaction residence, and aggregate connection demand before considering more app processes or database capacity. No infrastructure purchase or deployment is authorized.
 
-```text
-mean requests in flight = R × mean end-to-end seconds
-mean busy DB connections = transaction attempts/second × mean connection-holding seconds
-app CPU cores needed = R × CPU seconds/booking ÷ target CPU utilization
-app processes needed for admission = ceil(R × mean active-booking seconds ÷ (8 × target utilization))
-```
-
-Active-booking time includes transaction work and retry backoff after admission; queue wait is separate. The table below assumes 70% utilization for planning headroom, not a measured optimum:
-
-| Assumed mean active-booking time | Mean active bookings at 10,000/s | Minimum processes from admission alone | Maximum aggregate pool size |
-| -------------------------------- | -------------------------------: | -------------------------------------: | --------------------------: |
-| 10 ms                            |                              100 |                                     18 |                         180 |
-| 20 ms                            |                              200 |                                     36 |                         360 |
-| 50 ms                            |                              500 |                                     90 |                         900 |
-
-These are conditional calculations, not hardware recommendations or proof of throughput. For example, an assumed 2 ms of application CPU/booking requires about 29 CPU cores at 70% utilization, independently of the admission calculation. Database CPU, WAL/storage, memory, network latency, connection capacity, and load-generator resources need their own measurements and headroom. Check total pools across all replicas plus operational/read traffic against the database budget. Increasing PostgreSQL max_connections increases resource allocation; it does not guarantee more throughput. See [PostgreSQL connection settings](https://www.postgresql.org/docs/17/runtime-config-connection.html).
-
-After moving timeouts to fixed role/database defaults, one real first-attempt HTTP booking emitted eight Prisma query events: six SELECTs, one INSERT, and COMMIT, with zero timeout-configuration queries. Driver transaction setup may be outside that event stream, so this is not a complete server-side command census. At 10,000 bookings/second this implies at least 80,000 reported SQL operations/second before extra driver work, retries, and other traffic. Measure complete statement counts, transaction residence, CPU/booking, query plans, WAL/IO, and lock waits before choosing hardware or an optimization. This is a reason to benchmark the real write path, not to claim that any sufficiently large server will meet the target automatically.
-
-## Production acceptance procedure
-
-1. Provision an isolated production-equivalent environment with an explicitly recorded app/process count, CPU/RAM, PostgreSQL version/settings, storage, network topology, and representative dataset. Use the same application code and both exclusions. Do not test against customer production data.
-2. Run correctness suites first. Confirm both resource exclusions are active and commit/rollback behavior is unchanged.
-3. Run load generators separately from the app/database. Increase offered load through control stages such as 1,000, 2,500, 5,000, and 10,000 bookings/second, with a warmup before each measured stage. Use the [k6 constant-arrival-rate executor](https://grafana.com/docs/k6/latest/using-k6/scenarios/executors/constant-arrival-rate/) so request starts do not slow automatically when responses slow.
-4. Size and preallocate virtual users using iteration duration and headroom. At 10,000/s and an assumed 100 ms mean iteration time, 1,000 VUs are occupied on average; a 1,000-VU ceiling leaves no headroom. The script accepts LOAD_VUS; the local wrapper exposes --vus. A 2,000-VU budget is an illustrative starting point for that assumption, not verified generator capacity. Dropped iterations invalidate the rate test; inspect generator CPU/memory/network before attributing every drop to the server.
-5. Record offered starts, successful completions per measured second, status/error counts, latency, active/pending work, connection utilization, CPU, lock waits, query plans, WAL/storage activity, and drain duration. The existing local summary is diagnostic and does not replace production per-second completion/steady-state measurements.
-6. Check persisted successes, correct ownership/dealership/qualification/active flags, catalog-derived intervals, and zero technician or bay overlaps. Quiesce the generators before reconciling complete response counts with persisted rows. Investigate ambiguous responses instead of ignoring extra/missing rows.
-7. Only accept 10,000 successful bookings/second after repeatable production-equivalent runs meet the target without a growing backlog. If not, locate the limiting service cost and change one thing at a time. Candidate follow-ups are fewer database round trips, targeted query/index improvements, or additional measured application/database capacity. Keep the concrete repositories/use cases and regression tests; no speculative rewrite is approved by a capacity estimate.
-
-## Available tooling and verification boundary
-
-The local runner accepts --rate up to 10000 and --vus up to 10000 (default 1000). It still creates only verification-owned databases and ephemeral local processes; it is not a remote-deployment tool. Defaults remain a 100-request burst, or a 1,000-RPS control when rate mode is chosen without an explicit rate.
+The existing load runner remains unchanged. It owns disposable databases and ephemeral local app processes, not a remote deployment. Its summary reports are diagnostics; establishing steady-state per-window commit throughput would need further measurement before making a capacity claim. A future local diagnostic command is:
 
 ```sh
-# Local diagnostic workload only; not proof of production capacity.
-npm run test:load -- --mode rate --rate 10000 --vus 2000 --duration 60 --instances 4 --workload spread --report artifacts/target-10000.json
+npm run test:load -- --mode rate --rate 1000 --duration 60 --instances 4 --workload spread --report artifacts/stretch-1000.json
 ```
 
-The 10,000-RPS script configuration is checked with k6 inspect, and a smaller real HTTP run verifies the configurable VU path. The exact minute-long command above has not been executed. A five-second local diagnostic at 10,000 scheduled requests/second, before the production-hardware clarification, failed with generator saturation/overload and transport failures; see [LOAD_RESULTS.md](LOAD_RESULTS.md). It does not establish production capacity. No production environment, deployment credentials, or production acceptance result is available in this repository.
+The command is optional and was not executed for this documentation revision. A configured arrival rate is not proof of successful-booking throughput. See [README](../README.md#booking-capacity-and-load-verification) for the retained burst commands.
