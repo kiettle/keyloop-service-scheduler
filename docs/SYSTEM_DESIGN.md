@@ -20,7 +20,8 @@ Correct resource exclusivity across app instances, atomic writes, understandable
 - Only CONFIRMED blocks resources. Intervals are half-open `[startAt, endAt)`; adjacency is permitted.
 - Starts must be future instants with an explicit offset. Input uses seconds and at most three fractional digits; comparisons use absolute timestamps.
 - Reference data is seeded, with no concurrent administrative API. Existing appointments retain their stored intervals after catalog changes.
-- No cancellation/rescheduling API, vehicle-overlap exclusion, idempotency, hours/shifts, authentication, frontend, or notifications.
+- Durable idempotency is the approved P1 addition: POST requires a UUID v4 key; successful keys replay indefinitely.
+- No cancellation/rescheduling API, vehicle-overlap exclusion, hours/shifts, authentication, frontend, or notifications.
 
 ## 5. Architecture
 
@@ -29,7 +30,7 @@ flowchart TB
   Client["Swagger UI / cURL / HTTP tests"]
   subgraph App["NestJS modular monolith"]
     HTTP["DTO validation / request IDs / error filter"]
-    Bookings["AppointmentsModule: booking and retrieval"]
+    Bookings["AppointmentsModule: idempotent booking and retrieval"]
     Scheduling["SchedulingModule: availability and resource selection"]
     Health["HealthModule: process liveness"]
     Prisma["DatabaseModule: PrismaService / pool of 10"]
@@ -100,6 +101,13 @@ erDiagram
     uuid dealershipId FK
     boolean isActive
   }
+  Appointment ||--o| AppointmentBookingRequest : records
+  AppointmentBookingRequest {
+    uuid key PK
+    string requestFingerprint
+    uuid appointmentId FK, UK
+    jsonb responseBody
+  }
   Appointment {
     uuid id PK
     uuid customerId FK
@@ -124,47 +132,44 @@ sequenceDiagram
   participant H as Controller / validation
   participant U as CreateAppointmentUseCase
   participant A as BookingCapacity
-  participant S as Shared scheduling
+  participant Q as BookingRequestRepository
   participant R as AppointmentRepository
+  participant S as Shared scheduling
   participant DB as PostgreSQL
-  C->>H: POST five booking fields
-  H->>H: Validate UUIDs, timestamp, allowed fields
-  H->>U: Parsed input, requestId, disconnect signal
+  C->>H: POST five fields and Idempotency-Key
+  H->>U: Validated key, normalized input, request ID and disconnect signal
   U->>A: Acquire slot using shared deadline
   A-->>U: Admit, queue, or reject with 503
-  Note over U,A: Only admitted requests enter booking attempts
-  loop At most BOOKING_MAX_ATTEMPTS (default 4)
+  loop Shared deadline and bounded allocation attempts
     U->>R: Begin fresh READ COMMITTED transaction
     R->>DB: BEGIN
-    U->>DB: Load customer/vehicle using transaction
-    U->>S: Validate time, dealership, service and derive interval
-    S->>DB: Query active qualified technicians and active bays
-    S-->>U: Deterministic pair or unavailable
-    alt No eligible pair
-      U->>R: Reject attempt
-      R->>DB: ROLLBACK
-      U-->>H: 409 NO_AVAILABILITY
-    else Pair selected
-      U->>R: Create complete CONFIRMED appointment
+    U->>Q: Claim key and fingerprint in transaction
+    Q->>DB: INSERT ON CONFLICT (key) DO NOTHING
+    alt Completed key exists
+      Q->>DB: Read saved response in subsequent statement
+      Q-->>U: Saved fingerprint and response
+      Note over U,DB: Mismatched fingerprint rolls back and returns 409
+      R->>DB: COMMIT replay transaction
+      U-->>H: Saved response, replayed=true
+    else New claim
+      U->>DB: Validate customer and vehicle ownership
+      U->>S: Validate time and catalog, derive interval and select pair
+      S->>DB: Full-interval eligible resource queries
+      U->>R: Insert complete CONFIRMED appointment
       R->>DB: INSERT ON CONFLICT DO NOTHING RETURNING
-      Note over R,DB: Both exclusion constraints remain active
-      alt Insert and commit succeed
-        R->>DB: COMMIT
-        R-->>U: Committed record
-        U-->>H: Appointment
-        H-->>C: 201
-      else Skipped resource insert or recognized transaction conflict
-        R->>DB: ROLLBACK
-        R-->>U: Classified conflict
-        Note over U,DB: Backoff after rollback, next attempt uses fresh allocation and transaction
-      end
+      Note over R,DB: Both resource exclusions remain active
+      U->>Q: Save appointment reference and public response snapshot
+      Q->>DB: UPDATE claimed booking request
+      R->>DB: COMMIT appointment and request together
+      U-->>H: Saved response, replayed=false
     end
+    Note over U,DB: Failure rolls back, key-claim lock waits and allocation conflicts retry in fresh transactions
   end
   U->>A: Release slot in finally
-  Note over U,H: Exhausted conflicts return 503 and unexpected failures return 500
+  H-->>C: 201 and Idempotency-Replayed
 ```
 
-The loop describes bounded attempts; success, validation failure, or settled unavailability exits immediately. No success response precedes commit.
+Success exits the loop only after commit. A replay skips allocation and dynamic business validation. A failed claim/allocation leaves no committed processing record. Claim-only lock timeouts retry within the shared deadline without consuming allocation attempts. Allocation conflicts retain the four-attempt default; settled unavailability exits with 409, expired budgets with 503, and unexpected errors with 500. See [IDEMPOTENCY](IDEMPOTENCY.md).
 
 ## 9. Availability algorithm
 
@@ -178,13 +183,15 @@ The lowest technician and bay IDs form the pair. Counts and a boolean are return
 
 ## 10. Concurrency and transactions
 
-Every attempt uses one short Prisma interactive READ COMMITTED transaction: validate references and ownership, run shared scheduling, and attempt one complete row with single-item createManyAndReturn/skipDuplicates (PostgreSQL ON CONFLICT DO NOTHING RETURNING). Both exclusions remain active. A skipped insert is not success: an existing generated ID indicates an unexpected identity collision; otherwise the current schema's only other arbiters are the two resource exclusions, so it becomes a resource conflict. New appointment unique constraints require revisiting this classification.
+After claiming a new idempotency key, each allocation attempt uses one short Prisma interactive READ COMMITTED transaction: validate references and ownership, run shared scheduling, and attempt one complete row with single-item createManyAndReturn/skipDuplicates (PostgreSQL ON CONFLICT DO NOTHING RETURNING). Both exclusions remain active. A skipped insert is not success: an existing generated ID indicates an unexpected identity collision; otherwise the current schema's only other arbiters are the two resource exclusions, so it becomes a resource conflict. New appointment unique constraints require revisiting this classification. The separate booking-request table has its own explicit key-conflict handling; it adds no unique arbiter to the appointment INSERT.
 
 There are no explicit resource-row locks. Earlier selected-resource locking addressed plain-insert deadlock storms but serialized unrelated intervals sharing a resource; the approved conflict-aware insert replaced it. A candidate can still become stale before insertion. The whole attempt rolls back before fresh allocation, and direct writes remain protected by PostgreSQL exclusions.
 
-Default: four total attempts, configurable from 1–10, with jittered backoff outside the transaction. Empty candidates return 409; unresolved conflict exhaustion returns 503. Connection failures are not replayed because a lost commit acknowledgement can have an unknown complete outcome. A per-process gate admits eight active bookings and 128 waiting by default; excess admission is BOOKING_BUSY. Queued disconnects/expiry free queue entries. An already running operation may commit despite client disconnect.
+Default: four total allocation attempts, configurable from 1–10, with jittered backoff outside the transaction. Empty candidates return 409; unresolved conflict exhaustion returns 503. Connection failures are not automatically replayed by the server because a lost commit acknowledgement can have an unknown complete outcome; clients recover by retrying the same key. A per-process gate admits eight active bookings and 128 waiting by default; excess admission is BOOKING_BUSY. Queued disconnects/expiry free queue entries. An already running operation may commit despite client disconnect.
 
 All attempts share one monotonic booking budget, default five seconds, including queueing/backoff. Transaction acquisition waits at most one second or the remaining budget. Prisma's transaction timeout uses the remaining budget at attempt start, with callback deadline checks before completion. Database setup separately configures fixed role/database defaults of 250 ms lock, 2 s statement, and 5 s transaction timeout; new connections inherit them. No per-booking configuration SQL is issued. Cleanup/commit/network overhead can exceed the nominal budget. See [DATABASE](DATABASE.md#fixed-database-timeouts); no external work occurs inside transactions.
+
+Successful key claims, appointments, and serialized public responses commit atomically. Completed same-key/equivalent-body requests replay as 201 before time/catalog checks; different bodies return 409 IDEMPOTENCY_KEY_REUSED. Key-claim-only lock timeouts roll back before 25–50 ms backoff and fresh transactions within the shared deadline; they do not consume allocation attempts. Keys are retained indefinitely with no cleanup job. Incomplete/corrupt committed state is an internal error, not a reclaimable key. See [IDEMPOTENCY](IDEMPOTENCY.md).
 
 ## 11. Constraints and indexes
 
@@ -192,15 +199,17 @@ PostgreSQL enforces NOT NULL, reference FKs, unique VIN/qualification identity, 
 
 Resource dealership/active indexes, qualification keys, appointment FK indexes, and a dealership/start index support access paths. Eligibility uses parameterized tstzrange overlap predicates matching the partial GiST expressions. Earlier diagnostic overlap-probe plans are recorded in LOAD_RESULTS; they do not establish every production query plan. Eligibility, ownership, active flags, and catalog-derived duration are application rules; ordinary FKs establish existence only.
 
+The additive booking-request table has a UUID primary key, SHA-256 fingerprint, paired nullable appointment FK/JSONB response snapshot, creation time, unique appointment reference, and restrictive FK. The original eight domain tables and both exclusions are unchanged.
+
 ## 12. API contracts
 
-| Route                                                | Success | Purpose                                                                                 |
-| ---------------------------------------------------- | ------- | --------------------------------------------------------------------------------------- |
-| `POST /api/v1/appointments`                          | 201     | Five input fields; assigned resource IDs, derived interval, CONFIRMED status, createdAt |
-| `GET /api/v1/appointments/:id`                       | 200     | Persisted public appointment fields and relationship IDs                                |
-| `GET /api/v1/dealerships/:dealershipId/availability` | 200     | Service/time query; interval, counts, boolean; no write                                 |
-| `GET /health`                                        | 200     | `{ "status": "ok" }`                                                                    |
-| `GET /docs`, `GET /docs-json`                        | 200     | Swagger UI and generated OpenAPI contract                                               |
+| Route                                                | Success | Purpose                                                                                                                 |
+| ---------------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/v1/appointments`                          | 201     | Five input fields and required UUID v4 key header; assigned resource IDs, derived interval, CONFIRMED status, createdAt |
+| `GET /api/v1/appointments/:id`                       | 200     | Persisted public appointment fields and relationship IDs                                                                |
+| `GET /api/v1/dealerships/:dealershipId/availability` | 200     | Service/time query; interval, counts, boolean; no write                                                                 |
+| `GET /health`                                        | 200     | `{ "status": "ok" }`                                                                                                    |
+| `GET /docs`, `GET /docs-json`                        | 200     | Swagger UI and generated OpenAPI contract                                                                               |
 
 Swagger uses explicit DTO/controller metadata through a shared setup function in production and HTTP tests. No compiler plugin or business API change was introduced. The [demo guide](DEMO_GUIDE.md) provides executable requests.
 
@@ -214,7 +223,7 @@ An in-memory mutex or availability read alone cannot protect multiple instances.
 
 Verified ORM exclusion errors carry Prisma `P2039` and underlying SQLSTATE `23P01`; raw SQL uses `P2010`. Classification reads adapter metadata, not message text or every generic `P2039`. Explicit `40P01`, `40001`, `55P03`, or Prisma `P2034` indicate transaction contention. Statement cancellation `57014` and transaction timeout `25P04` become temporary-service failures without replay. Raw-query connection refusal may use DatabaseNotReachable adapter metadata without a SQLSTATE. P2028 before callback entry is acquisition failure; after entry and overall deadline expiration it is BOOKING_TIMEOUT. Unrelated closed-transaction bugs stay unexpected.
 
-Malformed input is 400; missing entities 404; settled unavailability 409; invalid future time/ownership/inactive-service rules 422; admission/deadline/contention or recognized temporary database failure 503; unexpected failures 500. Availability uses the same safe temporary/unexpected database policy. Error bodies are `{ error: { code, message, details? }, requestId }`, with safe DTO details only. Retryable responses include Retry-After. Startup verifies `SELECT 1`; shutdown disconnects the pool.
+Malformed input is 400; missing entities 404; settled unavailability or key reuse 409; invalid future time/ownership/inactive-service rules 422; admission/deadline/contention or recognized temporary database failure 503; unexpected failures 500. Availability uses the same safe temporary/unexpected database policy. Error bodies are `{ error: { code, message, details? }, requestId }`, with safe DTO details only. Retryable responses include Retry-After. Startup verifies `SELECT 1`; shutdown disconnects the pool.
 
 ## 15. Performance and scalability
 
@@ -232,14 +241,16 @@ This is an unauthenticated local assessment demo. Production needs identity, dea
 
 ## 18. Known limitations
 
-No exactly-once request guarantee: a transport failure during commit may leave an unknown complete outcome. Repeated client requests may create distinct bookings, including for the same vehicle. Advisory availability is not a transactionally consistent snapshot. Concurrent administrative changes are not supported. Concurrency suites use two app instances in one process; load diagnostics additionally use separate Node processes on one host. Multi-host/network faults, hosted extension permissions, populated-data migration locks, production load, and the future 1,000-successful-bookings/second stretch goal remain unverified.
+Idempotency protects repeated requests using the same successful key, not response delivery or different keys. A transport failure during commit is resolved through a same-key retry. Different keys may create distinct bookings, including for the same vehicle. Advisory availability is not a transactionally consistent snapshot. Concurrent administrative changes are not supported. Concurrency suites use two app instances in one process; load diagnostics additionally use separate Node processes on one host. Multi-host/network faults, hosted extension permissions, populated-data migration locks, production load, and the future 1,000-successful-bookings/second stretch goal remain unverified.
 
 ## 19. Potential production improvements
 
-Prioritize authenticated authorization, durable idempotency, controlled reference-data updates, and operational metrics based on actual deployment needs. Working hours, cancellation, shifts, fairness, and specialized bays need separately agreed rules and tests. These are proposals; none is promised or implemented in this submission phase.
+Prioritize authenticated authorization, controlled reference-data updates, and operational metrics based on actual deployment needs. Working hours, cancellation, shifts, fairness, and specialized bays need separately agreed rules and tests. These are proposals; none is promised or implemented in this submission phase.
 
 ## 20. AI use during design
 
 The developer selected Scenario A, backend scope, stack, Vitest, phased approvals, and simplicity constraints. AI assisted requirement interpretation, model/constraint alternatives, transaction/error strategy, implementation, tests, and documentation. The developer challenged guards, abstractions, relationships, and package choices; actual PostgreSQL and HTTP checks supplied evidence.
 
 Real corrections include startup connectivity/metadata issues, Prisma error-shape assumptions, a race test that assumed only exclusion errors, temporary resource locking followed by approved conflict-aware insertion, and moving fixed timeouts out of each transaction. This merge resolved an older Phase 5 stash against commit 40352a1, preserving the current business implementation while restoring Swagger and submission documents. [README](../README.md#ai-collaboration-narrative) summarizes all stages; historical phase notes, LOAD_RESULTS, and [FINAL_REVIEW](FINAL_REVIEW.md) distinguish observed results from assumptions. The video remains a manual deliverable.
+
+The subsequent approved idempotency addition uses a ninth model and an additive migration, preserving the booking/exclusion algorithm. The developer chose required booking keys, successful-response-only storage, indefinite retention, and bounded waiting for duplicates. The design explicitly handles replay after time/catalog changes and separates key waiting from allocation retries. Executed evidence is recorded in [IDEMPOTENCY](IDEMPOTENCY.md).

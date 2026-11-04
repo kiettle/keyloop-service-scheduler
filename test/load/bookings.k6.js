@@ -2,6 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Trend } from 'k6/metrics';
+import { randomBytes } from 'k6/crypto';
 
 const mode = __ENV.LOAD_MODE;
 const count = Number(__ENV.LOAD_COUNT);
@@ -20,6 +21,14 @@ const overload = new Counter('booking_overload');
 const unexpected = new Counter('booking_unexpected_errors');
 const latency = new Trend('booking_latency_ms', true);
 const launch = new Trend('booking_start_offset_ms', true);
+
+function newBookingKey() {
+  const bytes = new Uint8Array(randomBytes(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 http.setResponseCallback(http.expectedStatuses(...(workload === 'hotspot' ? [201, 409] : [201])));
 export const options = {
@@ -81,7 +90,7 @@ export default function (data) {
   started.add(1);
   launch.add(Date.now() - (mode === 'burst' ? data.barrier : exec.scenario.startTime));
   const response = http.post(`${baseUrl}/api/v1/appointments`, JSON.stringify(input), {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': newBookingKey() },
     timeout: '10s',
     tags: { name: 'booking' },
   });

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, cpus, totalmem, platform, arch } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { Prisma } from '@prisma/client';
 import { createTestDatabase } from '../helpers/test-database';
 import { seedIndependentCustomers } from '../helpers/booking-app';
 import { validateEnvironment } from '../../src/config/environment';
@@ -232,6 +233,10 @@ async function main() {
       WHERE service_bay_id = ${bays[0]}::uuid AND status = 'CONFIRMED'
         AND tstzrange(start_at,end_at,'[)') && tstzrange('2040-01-01'::timestamptz,'2040-01-02'::timestamptz,'[)')`;
     const persisted = await database.prisma.appointment.count();
+    const bookingRequests = await database.prisma.appointmentBookingRequest.count();
+    const incompleteBookingRequests = await database.prisma.appointmentBookingRequest.count({
+      where: { OR: [{ appointmentId: null }, { responseBody: { equals: Prisma.DbNull } }] },
+    });
     const confirmed = summary.metrics.bookings_confirmed.values.count;
     const invariants = {
       ...overlaps,
@@ -239,6 +244,9 @@ async function main() {
       persisted,
       confirmed,
       successRowsMatch: persisted === confirmed,
+      bookingRequests,
+      incompleteBookingRequests,
+      bookingRequestRowsMatch: bookingRequests === persisted && incompleteBookingRequests === 0,
     };
     const passed =
       exitCode === 0 &&
@@ -246,7 +254,8 @@ async function main() {
       !overlaps.technician &&
       !overlaps.bay &&
       invalid.count === 0 &&
-      invariants.successRowsMatch;
+      invariants.successRowsMatch &&
+      invariants.bookingRequestRowsMatch;
     const report = {
       passed,
       exitCode,

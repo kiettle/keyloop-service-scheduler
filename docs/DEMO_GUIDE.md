@@ -31,7 +31,7 @@ curl --fail --silent --show-error --output /dev/null "$BASE_URL/docs/"
 curl --fail --silent --show-error --output /dev/null "$BASE_URL/docs-json"
 ```
 
-Expect health JSON `{ "status": "ok" }` and successful documentation responses. Open `$BASE_URL/docs` in the browser: Appointments, Availability, and Health are documented. Explain the five POST fields, server-derived assignments/duration, and status/error schemas. View the UI before issuing the cURL demo; executing additional POSTs in Swagger at the same interval would consume resources.
+Expect health JSON `{ "status": "ok" }` and successful documentation responses. Open `$BASE_URL/docs` in the browser: Appointments, Availability, and Health are documented. Explain the required UUID v4 Idempotency-Key header, five POST fields, server-derived assignments/duration, and status/error schemas. View the UI before issuing the cURL demo; executing additional POSTs in Swagger at the same interval would consume resources.
 
 ## 3. Generate a future interval and check availability
 
@@ -66,10 +66,11 @@ console.log(JSON.stringify({
 NODE
 }
 
+export DEMO_KEY="$(node -e 'console.log(require("node:crypto").randomUUID())')"
 booking_payload 1 1 > "$DEMO_DIR/request.json"
 curl --fail-with-body --silent --show-error \
   "$BASE_URL/api/v1/appointments" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $DEMO_KEY" \
   --data-binary "@$DEMO_DIR/request.json" \
   --output "$DEMO_DIR/created.json" --write-out 'HTTP %{http_code}\n'
 cat "$DEMO_DIR/created.json"
@@ -80,19 +81,46 @@ curl --fail --silent --show-error "$BASE_URL/api/v1/appointments/$APPOINTMENT_ID
 
 Expect HTTP 201, CONFIRMED, technician A1 and bay A1, a server-computed end 30 minutes after start, and all association IDs. GET returns the same persisted public record. Automated tests additionally shut down/recreate the app and retrieve that row again.
 
+Before changing the request file, retry the same intent and then deliberately change its body:
+
+```sh
+curl --fail-with-body --silent --show-error \
+  "$BASE_URL/api/v1/appointments" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $DEMO_KEY" \
+  --data-binary "@$DEMO_DIR/request.json" \
+  --dump-header "$DEMO_DIR/replayed-headers.txt" --output "$DEMO_DIR/replayed.json" \
+  --write-out 'HTTP %{http_code}\n'
+cat "$DEMO_DIR/replayed-headers.txt"
+cmp "$DEMO_DIR/created.json" "$DEMO_DIR/replayed.json"
+
+node - "$DEMO_DIR/request.json" > "$DEMO_DIR/changed.json" <<'NODE'
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+input.startAt = new Date(Date.parse(input.startAt) + 3600000).toISOString();
+console.log(JSON.stringify(input));
+NODE
+curl --silent --show-error "$BASE_URL/api/v1/appointments" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $DEMO_KEY" \
+  --data-binary "@$DEMO_DIR/changed.json" --write-out '\nHTTP %{http_code}\n'
+```
+
+Expect the replay to return 201, `Idempotency-Replayed: true`, and exactly the saved response (`cmp` exits 0). Changed-body reuse returns 409 IDEMPOTENCY_KEY_REUSED before availability checks. The replay consumes no second resource pair. Use a new key for each independent booking below. Successful keys are retained indefinitely; failures do not consume keys. After a timeout or lost acknowledgement, keep the original key until the outcome is resolved.
+
 ## 5. Consume the alternative pair and show a conflict
 
 Customer 2 owns vehicle 3; customer 3 owns vehicle 4. Both use dealership A in this demo because vehicles/customers have no dealership-specific ownership restriction.
 
 ```sh
+export DEMO_KEY_2="$(node -e 'console.log(require("node:crypto").randomUUID())')"
 booking_payload 2 3 > "$DEMO_DIR/request.json"
 curl --fail-with-body --silent --show-error \
-  "$BASE_URL/api/v1/appointments" -H 'Content-Type: application/json' \
+  "$BASE_URL/api/v1/appointments" -H 'Content-Type: application/json' -H "Idempotency-Key: $DEMO_KEY_2" \
   --data-binary "@$DEMO_DIR/request.json" --write-out '\nHTTP %{http_code}\n'
 
+export DEMO_KEY_3="$(node -e 'console.log(require("node:crypto").randomUUID())')"
 booking_payload 3 4 > "$DEMO_DIR/request.json"
 curl --silent --show-error \
-  "$BASE_URL/api/v1/appointments" -H 'Content-Type: application/json' \
+  "$BASE_URL/api/v1/appointments" -H 'Content-Type: application/json' -H "Idempotency-Key: $DEMO_KEY_3" \
   --data-binary "@$DEMO_DIR/request.json" --write-out '\nHTTP %{http_code}\n'
 
 curl --fail --silent --show-error --get \
@@ -138,9 +166,9 @@ Show source for the two named exclusions, the conflict-aware insert, and the bou
 | 6:00–7:30 | AI collaboration: developer direction, real error probes, review findings, verification and corrections |
 | 7:30–8:30 | Trade-offs, limitations, what you learned, and remaining production work                                |
 
-Use genuine examples: startup connectivity validation, Prisma SQLSTATE metadata, a test that incorrectly assumed only exclusion errors, and the progression from temporary resource locks to approved conflict-aware insertion and fixed database timeouts. State what you personally decided and can explain. Do not present proposed telemetry, idempotency, authentication, production throughput, or a recorded video as implemented.
+Use genuine examples: startup connectivity validation, Prisma SQLSTATE metadata, a test that incorrectly assumed only exclusion errors, and the progression from temporary resource locks to approved conflict-aware insertion and fixed database timeouts. State what you personally decided and can explain. Do not present proposed telemetry, authentication, production throughput, or a recorded video as implemented.
 
-For the interview, explain the 100-request burst as a resilience test: enough eligible resource/time capacity yields 100 confirmations; one technician and bay at an identical interval yields one confirmation and 99 availability conflicts. Exact persisted counts, valid assignments, and zero overlaps matter; overload or technical failures fail these profiles. The mandatory 20-request regression remains. Requests launch from a client barrier, with actual launch spread reported. The per-process queue bounds active work; PostgreSQL exclusions enforce exclusivity across instances. Explicit resource-row locks were replaced by conflict-aware insertion and bounded fresh-transaction retries.
+For the interview, explain the 100-request burst as a resilience test: enough eligible resource/time capacity yields 100 confirmations; one technician and bay at an identical interval yields one confirmation and 99 availability conflicts. Exact persisted counts, valid assignments, and zero overlaps matter; overload or technical failures fail these profiles. The mandatory 20-request regression remains. Requests launch from a client barrier, with actual launch spread reported. The per-process queue bounds active work; PostgreSQL exclusions enforce exclusivity across instances. Explicit resource-row locks were replaced by conflict-aware insertion and bounded fresh-transaction retries. Idempotency adds a unique key claim and saved response in the same transaction; replay bypasses resource allocation, while key mismatch returns 409.
 
 Describe 1,000 successful bookings/second as an unverified future stretch goal, not submission acceptance or a verified Keyloop traffic requirement. Historical 100-request bursts and the 500-RPS minute control passed on earlier snapshots; the 1,000-RPS minute trials failed. Refer to [LOAD_RESULTS](LOAD_RESULTS.md) for source/configuration limitations. No load tests were rerun for the 2026-11-04 documentation-only goal revision, and no current-source or production capacity is established. Keep the architecture simple and improve it only when measurements justify the change.
 

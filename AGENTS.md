@@ -26,7 +26,9 @@ The user approved fixed PostgreSQL role/database defaults (250 ms lock, 2 s stat
 
 Phase 5 additionally allows requirements/code/database audits, fixes for demonstrated defects with regression tests, pinned Swagger UI/OpenAPI documentation, final design/README/demo/review documents, and isolated fresh-install verification. Preserve staged changes. Do not automatically commit, push, or record a video.
 
-Not authorized: optional business features, idempotency, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, CI, notifications, or additional infrastructure. Do not advance beyond Phase 5. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
+The user additionally approved durable booking idempotency: a required UUID v4 Idempotency-Key on POST appointments, one additional Prisma model/additive migration, atomic key/appointment/success-response persistence, bounded same-key waiting, replay across instances/restarts, and the corresponding client, test, load, and documentation updates. Retain successful keys indefinitely; failures do not consume keys. Keep other phase and infrastructure boundaries unchanged.
+
+Not authorized: other optional business features, cancellation/rescheduling APIs, authentication, working hours/shifts, frontend, CI, notifications, or additional infrastructure. Do not advance beyond Phase 5. All other engineering, integrity, testing, and change-preservation rules below remain in effect.
 
 The user's existing E-commerce project is **reference material only**. You may inspect its architecture, transaction handling, tests, and NestJS patterns, but must not edit it or transplant its domain assumptions into the scheduler. If asked to review the spec, produce findings and concrete suggested edits; do not implement fixes automatically.
 

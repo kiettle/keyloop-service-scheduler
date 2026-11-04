@@ -8,7 +8,7 @@ Backend-only implementation of **Keyloop Scenario A**. A customer requests a ser
 | Availability for the entire service duration | Qualification/active/dealership filters, half-open overlap queries, PostgreSQL exclusions |
 | Persistent confirmed associations            | Atomic appointment row and retrieval after app restart                                    |
 
-Implemented: booking, retrieval, advisory availability, strict validation, safe errors, structured logs/request IDs, bounded fresh-transaction retries, Swagger, reproducible seeds/migrations, and real PostgreSQL/HTTP/concurrency tests. No optional business features are implemented.
+Implemented: booking, retrieval, advisory availability, strict validation, safe errors, structured logs/request IDs, bounded fresh-transaction retries, Swagger, reproducible seeds/migrations, and real PostgreSQL/HTTP/concurrency tests. Durable booking idempotency is the explicitly approved P1 addition.
 
 - [System design and diagrams](docs/SYSTEM_DESIGN.md)
 - [Requirements, executed evidence, and submission readiness](docs/FINAL_REVIEW.md)
@@ -21,7 +21,7 @@ NestJS **11.2.8**, TypeScript **5.9.3**, Prisma/client/adapter **7.10.1**, Postg
 
 One modular monolith: thin controllers call application use cases; concrete repositories own SQL/transactions; shared scheduling owns interval and selection rules. HTTP validation/filter/logging and Prisma connection lifecycle are shared infrastructure. No generic repository framework or additional services.
 
-Booking uses READ COMMITTED and a single-item conflict-aware insert with both GiST exclusions. A skipped resource-conflict insert rolls back before a fresh allocation attempt; an identity collision remains unexpected. There are no explicit resource-row locks. Four total attempts with jittered backoff is the default; settled exhaustion is 409 and unresolved contention is 503. Success follows commit. A bounded per-process queue protects capacity, and all attempts share one booking deadline.
+Booking uses READ COMMITTED and a single-item conflict-aware insert with both GiST exclusions. A skipped resource-conflict insert rolls back before a fresh allocation attempt; an identity collision remains unexpected. There are no explicit resource-row locks. Four total allocation attempts with jittered backoff is the default; settled exhaustion is 409 and unresolved contention is 503. Success follows commit. A bounded per-process queue protects capacity, and all attempts share one booking deadline.
 
 ## Prerequisites
 
@@ -116,7 +116,7 @@ Example POST payload using seeded customer 1 / vehicle 1 / dealership A / 30-min
 }
 ```
 
-The example time must be future relative to the server. The demo guide generates a fresh future timestamp and supplies exact cURL commands. Success includes a generated appointment ID, all association IDs, derived endAt, CONFIRMED status, and createdAt. Dates serialize as ISO UTC with milliseconds. GET availability returns interval, boolean, and technician/bay counts; its internal candidate IDs are omitted.
+POST also requires one UUID v4 `Idempotency-Key` header; generate it once per booking intent and reuse it on retries. The example time must be future relative to the server for a new booking. The demo guide generates a fresh future timestamp and supplies exact cURL commands. Success includes a generated appointment ID, all association IDs, derived endAt, CONFIRMED status, and createdAt. Dates serialize as ISO UTC with milliseconds. GET availability returns interval, boolean, and technician/bay counts; its internal candidate IDs are omitted.
 
 Only the five POST fields and two availability query fields are accepted. Client-supplied resource IDs, duration, end, or status are rejected. UUIDs and real calendar timestamps are validated; timestamps require seconds, `Z` or `±HH:MM`, and at most three fractional digits. All active bays are compatible with all services; service types are global. See [seed identities](docs/DATABASE.md#deterministic-reference-fixtures).
 
@@ -132,7 +132,15 @@ Errors use:
 }
 ```
 
-400 = malformed input; 404 = missing reference; 422 = business validation; 409 = settled resource exhaustion; 503 = admission exhaustion, expired booking budget, unresolved contention, or recognized temporary database failure; 500 = unexpected failure. Availability uses the same safe temporary/unexpected error policy. Validation may add a details array. Business API responses include `x-request-id`; 503 adds `Retry-After: 1`. SQL, credentials, and stacks are not exposed.
+400 = malformed input; 404 = missing reference; 422 = business validation; 409 = settled resource exhaustion or `IDEMPOTENCY_KEY_REUSED`; 503 = admission exhaustion, expired booking budget, unresolved contention, or recognized temporary database failure; 500 = unexpected failure. Availability uses the same safe temporary/unexpected error policy. Validation may add a details array. Business API responses include `x-request-id`; 503 adds `Retry-After: 1`. SQL, credentials, and stacks are not exposed.
+
+## Booking idempotency
+
+`POST /api/v1/appointments` requires exactly one UUID v4 `Idempotency-Key`; GET routes do not. A new successful booking returns 201 with `Idempotency-Replayed: false`. Repeating the same key and normalized five-field payload returns 201 with the original saved body and `Idempotency-Replayed: true`, even after restart, changed availability, or the booked start time passing. Each HTTP attempt gets a fresh `x-request-id`. A different payload with a successfully used key returns `409 IDEMPOTENCY_KEY_REUSED`; missing/invalid/repeated headers return `400 VALIDATION_ERROR`.
+
+The claim, appointment, and public response snapshot commit in one PostgreSQL transaction. Concurrent same-key requests wait within the shared booking budget; unresolved waits return `503 BOOKING_TIMEOUT` with `Retry-After: 1`. Business/validation failures and rolled-back attempts do not consume the key. Successful keys are retained indefinitely; there is no expiry job or separate processing record. Resource exclusions and the admission gate retain their original responsibilities.
+
+Frontend clients generate one key per intent (for example `crypto.randomUUID()`), share it across double-clicks/retries, and preserve it until an uncertain outcome is resolved. New keys do not deduplicate the same payload. No frontend is included. See the [idempotency design and limits](docs/IDEMPOTENCY.md) and [executable replay demo](docs/DEMO_GUIDE.md#4-create-and-retrieve-a-confirmed-appointment). This required header is a deliberate client contract change; existing appointments need no backfill.
 
 ## Testing and concurrency demonstration
 
@@ -163,7 +171,7 @@ A failure is a finding to investigate, not a reason to raise timeouts or loosen 
 - Integration tests require TEST_DATABASE_URL from `.env.example`; they never substitute DATABASE_URL.
 - A 409 after repeated demo requests usually means that interval is occupied. Generate a new future timestamp.
 - Availability is advisory. Booking always revalidates; a previous true result is not a reservation.
-- This local demo has no authentication, durable request idempotency, vehicle-overlap exclusion, working hours, cancellation, or concurrent admin workflows. Repeating a client request can create another booking. A lost commit acknowledgement may have an unknown complete outcome.
+- This local demo has no authentication, vehicle-overlap exclusion, working hours, cancellation, or concurrent admin workflows. Same-key retries recover the saved successful booking; different keys remain independent booking intents. A lost acknowledgement still has an uncertain outcome until the same key is retried.
 - Historical local burst/rate diagnostics are recorded in LOAD_RESULTS; 1,000 successful bookings/second is an unverified future stretch goal, not a submission requirement. Multi-host fault behavior and hosted extension permissions are unverified. Logs are implemented; metrics/tracing are future proposals.
 - The 5–10 minute video and final repository publication/access checks remain manual submission steps.
 
@@ -184,6 +192,8 @@ The developer selected Scenario A, backend-only scope, NestJS/PostgreSQL/Prisma,
 
 An earlier review reproduced exclusion-related deadlock storms and temporarily used selected-resource row locks. The developer subsequently challenged the contention cost, approved conflict-aware insertion with bounded admission/deadlines/backoff, and moved fixed database timeouts out of individual transactions. That implementation is now in commit 40352a1; this Phase 5 merge preserves it. Real PostgreSQL tests verify direct exclusion failures, skipped-insert rollback, fresh allocation, timeout recovery, and the unchanged strict contention assertions. The Phase 5 stash also records a Swagger YAML dependency advisory; its scoped patched override is retained and current audit results are recorded in FINAL_REVIEW.
 
+The developer subsequently selected durable idempotency for lost-response recovery. AI helped design atomic key claiming and response snapshots in the existing PostgreSQL transaction, with successful keys retained indefinitely. Key-claim waits are classified separately from allocation retries; replay precedes time/catalog validation. Verification is recorded in [IDEMPOTENCY](docs/IDEMPOTENCY.md), with historical load evidence kept separate.
+
 Earlier findings and command history are recorded in [Phase 1](docs/PHASE_1.md), [Phase 2](docs/PHASE_2.md), [Phase 3](docs/PHASE_3.md), and [Phase 4](docs/PHASE_4.md). Git history and these development records are evidence sources, not proof that every phase is already published remotely. Load diagnostics describe their measured source/configuration only. No video recording, interview outcome, production capacity, or unexecuted verification is claimed.
 
 ## Booking capacity and load verification
@@ -192,7 +202,7 @@ The assessment resilience criterion is a **100-request burst**: expect 100 confi
 
 **1,000 successfully committed bookings/second is an unverified future stretch goal, not a submission requirement or a verified Keyloop traffic need.** Keep one PostgreSQL database and the current safeguards; optimize from measurements. See [load evidence and future benchmarking](docs/CAPACITY_PLAN.md). Burst success does not establish sustained throughput or production capacity.
 
-`.env.example` documents `BOOKING_MAX_CONCURRENT` (default 8, range 1–8), `BOOKING_MAX_PENDING` (default 128, range 0–1000), and `BOOKING_TIMEOUT_MS` (default 5000, range 100–30000). A zero pending limit rejects excess work immediately. These per-process limits protect capacity; PostgreSQL still enforces resource exclusivity across instances. A disconnected queued request is removed. An already executing request may still commit, so a lost client acknowledgement remains ambiguous without durable idempotency.
+`.env.example` documents `BOOKING_MAX_CONCURRENT` (default 8, range 1–8), `BOOKING_MAX_PENDING` (default 128, range 0–1000), and `BOOKING_TIMEOUT_MS` (default 5000, range 100–30000). A zero pending limit rejects excess work immediately. These per-process limits protect capacity; PostgreSQL still enforces resource exclusivity across instances. A disconnected queued request is removed. An already executing request may still commit, so a lost client acknowledgement should be recovered by retrying the same key.
 
 The overall booking budget covers queueing, attempts, and backoff. PostgreSQL's fixed five-second limit applies separately to each transaction and is configured once during database setup. Prisma uses the remaining booking budget per attempt. Cleanup and response delivery can exceed the nominal budget; the database limit is not an exact HTTP-response deadline. No timeout-configuration query is issued for each booking.
 
@@ -214,6 +224,6 @@ npm run test:load -- --mode rate --rate 1000 --duration 60 --instances 4 --workl
 
 The successful profile uses distinct intervals across twenty fixture dealerships. Customers/vehicles are synthetic and reused at different intervals; the injected test clock keeps fixtures deterministic. The hotspot profile expects one confirmed row and the remaining requests to receive 409. Overload, dropped arrivals, wrong counts or broken database invariants fail the target profile. Reports distinguish all responses from successful bookings. Latency is measured, with no unagreed production SLO implied. See [concurrency design and evidence](docs/CONCURRENCY_PROPOSAL.md).
 
-Historical local evidence from earlier source/configuration snapshots: all final 100-request burst shapes passed; the two-process 500-RPS / 60-second control passed with 30,001 confirmed rows and no errors/overload. The earlier 1,000-RPS minute target **did not pass**, including at four processes. Increasing the bounded pending queue to 256 made latency and dropped arrivals worse, so the default stays 128. Under the former, now-withdrawn target, a five-second 10,000-RPS diagnostic also failed, including generator saturation and transport errors. See [all retained results and limitations](docs/LOAD_RESULTS.md). These runs do not establish current-source or production capacity. No load tests were rerun for the 2026-11-04 documentation-only goal revision.
+Historical local evidence from earlier source/configuration snapshots: all final 100-request burst shapes passed; the two-process 500-RPS / 60-second control passed with 30,001 confirmed rows and no errors/overload. The earlier 1,000-RPS minute target **did not pass**, including at four processes. Increasing the bounded pending queue to 256 made latency and dropped arrivals worse, so the default stays 128. Under the former, now-withdrawn target, a five-second 10,000-RPS diagnostic also failed, including generator saturation and transport errors. See [all retained results and limitations](docs/LOAD_RESULTS.md). These runs do not establish current-source or production capacity. No load tests were rerun for that documentation-only goal revision. The subsequent idempotency implementation has its own [current burst verification](docs/IDEMPOTENCY.md#executed-evidence--2026-11-04), separate from historical rate results.
 
 The main bootstrap and HTTP fixtures share 65-second HTTP keep-alive / 66-second header-timeout settings. These must be considered alongside actual proxy/client idle limits in deployment. Compiled startup and /health were checked; no deployment or repository publication was performed.

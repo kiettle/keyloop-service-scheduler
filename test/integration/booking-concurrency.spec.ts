@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
@@ -144,7 +145,10 @@ describe('concurrent HTTP bookings across two app instances', () => {
     const race = forceFirstTwoReadsToRace();
     const responses = await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
-        apps[i % 2].http.post('/api/v1/appointments').send(independentInput(i)),
+        apps[i % 2].http
+          .post('/api/v1/appointments')
+          .set('Idempotency-Key', randomUUID())
+          .send(independentInput(i)),
       ),
     );
     expect(responses.filter((r) => r.status === 201)).toHaveLength(1);
@@ -164,7 +168,12 @@ describe('concurrent HTTP bookings across two app instances', () => {
     await resources([id.technicianA1, id.technicianA3], [id.bayA1, id.bayA2]);
     const race = forceFirstTwoReadsToRace();
     const responses = await Promise.all(
-      apps.map((app, i) => app.http.post('/api/v1/appointments').send(independentInput(i))),
+      apps.map((app, i) =>
+        app.http
+          .post('/api/v1/appointments')
+          .set('Idempotency-Key', randomUUID())
+          .send(independentInput(i)),
+      ),
     );
     expect(responses.map((r) => r.status)).toEqual([201, 201]);
     const appointments = responses.map((r) => r.body as AppointmentJson);
@@ -196,7 +205,10 @@ describe('concurrent HTTP bookings across two app instances', () => {
     await resources([id.technicianA1], [id.bayA1, id.bayA2, third.id]);
     const responses = await Promise.all(
       Array.from({ length: 3 }, (_, i) =>
-        apps[i % 2].http.post('/api/v1/appointments').send(independentInput(i)),
+        apps[i % 2].http
+          .post('/api/v1/appointments')
+          .set('Idempotency-Key', randomUUID())
+          .send(independentInput(i)),
       ),
     );
     expect(responses.filter((r) => r.status === 201)).toHaveLength(1);
@@ -211,7 +223,12 @@ describe('concurrent HTTP bookings across two app instances', () => {
       application.app.get(ConfigService).set('BOOKING_MAX_ATTEMPTS', 1);
     try {
       const responses = await Promise.all(
-        apps.map((app, i) => app.http.post('/api/v1/appointments').send(independentInput(i))),
+        apps.map((app, i) =>
+          app.http
+            .post('/api/v1/appointments')
+            .set('Idempotency-Key', randomUUID())
+            .send(independentInput(i)),
+        ),
       );
       expect(responses.map((r) => r.status).toSorted()).toEqual([201, 503]);
       const failure = responses.find((r) => r.status === 503)!;
@@ -231,7 +248,10 @@ describe('concurrent HTTP bookings across two app instances', () => {
     await resources([id.technicianA1, id.technicianA2, id.technicianA3], [id.bayA1]);
     const responses = await Promise.all(
       Array.from({ length: 3 }, (_, i) =>
-        apps[i % 2].http.post('/api/v1/appointments').send(independentInput(i)),
+        apps[i % 2].http
+          .post('/api/v1/appointments')
+          .set('Idempotency-Key', randomUUID())
+          .send(independentInput(i)),
       ),
     );
     expect(responses.filter((r) => r.status === 201)).toHaveLength(1);
@@ -242,9 +262,13 @@ describe('concurrent HTTP bookings across two app instances', () => {
   it('CT-05: adjacent intervals succeed concurrently on the same technician and bay', async () => {
     await resources([id.technicianA1], [id.bayA1]);
     const responses = await Promise.all([
-      apps[0].http.post('/api/v1/appointments').send(independentInput(0)),
+      apps[0].http
+        .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
+        .send(independentInput(0)),
       apps[1].http
         .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
         .send({ ...independentInput(1), startAt: at('10:30').toISOString() }),
     ]);
     expect(responses.map((r) => r.status)).toEqual([201, 201]);

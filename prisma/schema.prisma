@@ -101,25 +101,26 @@ model ServiceBay {
 }
 
 model Appointment {
-  id            String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  customerId    String            @map("customer_id") @db.Uuid
-  vehicleId     String            @map("vehicle_id") @db.Uuid
-  dealershipId  String            @map("dealership_id") @db.Uuid
-  serviceTypeId String            @map("service_type_id") @db.Uuid
-  technicianId  String            @map("technician_id") @db.Uuid
-  serviceBayId  String            @map("service_bay_id") @db.Uuid
+  id             String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId     String                     @map("customer_id") @db.Uuid
+  vehicleId      String                     @map("vehicle_id") @db.Uuid
+  dealershipId   String                     @map("dealership_id") @db.Uuid
+  serviceTypeId  String                     @map("service_type_id") @db.Uuid
+  technicianId   String                     @map("technician_id") @db.Uuid
+  serviceBayId   String                     @map("service_bay_id") @db.Uuid
   // SQL migration enforces end > start and independent partial GiST exclusions.
-  startAt       DateTime          @map("start_at") @db.Timestamptz(3)
-  endAt         DateTime          @map("end_at") @db.Timestamptz(3)
-  status        AppointmentStatus @default(CONFIRMED)
-  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
-  customer      Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  vehicle       Vehicle           @relation(fields: [vehicleId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  dealership    Dealership        @relation(fields: [dealershipId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  serviceType   ServiceType       @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  technician    Technician        @relation(fields: [technicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  serviceBay    ServiceBay        @relation(fields: [serviceBayId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  startAt        DateTime                   @map("start_at") @db.Timestamptz(3)
+  endAt          DateTime                   @map("end_at") @db.Timestamptz(3)
+  status         AppointmentStatus          @default(CONFIRMED)
+  createdAt      DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  customer       Customer                   @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  vehicle        Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  dealership     Dealership                 @relation(fields: [dealershipId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  serviceType    ServiceType                @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  technician     Technician                 @relation(fields: [technicianId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  serviceBay     ServiceBay                 @relation(fields: [serviceBayId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  bookingRequest AppointmentBookingRequest?
 
   @@index([customerId])
   @@index([vehicleId])
@@ -129,4 +130,16 @@ model Appointment {
   @@index([technicianId])
   @@index([serviceBayId])
   @@map("appointments")
+}
+
+model AppointmentBookingRequest {
+  key                String       @id @db.Uuid
+  requestFingerprint String       @map("request_fingerprint") @db.Char(64)
+  appointmentId      String?      @unique @map("appointment_id") @db.Uuid
+  responseBody       Json?        @map("response_body") @db.JsonB
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  appointment        Appointment? @relation(fields: [appointmentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  // SQL checks pair the nullable fields; nulls exist only during an uncommitted claim.
+  @@map("appointment_booking_requests")
 }

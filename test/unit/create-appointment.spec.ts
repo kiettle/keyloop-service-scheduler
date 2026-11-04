@@ -5,11 +5,18 @@ import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { BookingRequestRepository } from '../../src/appointments/booking-request.repository';
+import { BookingClaim } from '../../src/appointments/booking-request.repository';
+import { serializeAppointment } from '../../src/appointments/appointment-result';
+import { bookingFingerprint, BookingKeyBusy } from '../../src/appointments/booking-idempotency';
 import { BookingCapacity } from '../../src/appointments/booking-capacity';
 import { validateEnvironment } from '../../src/config/environment';
 import { AppointmentRepository } from '../../src/appointments/appointment.repository';
 import { BookingConflict, DatabaseUnavailable } from '../../src/appointments/booking.error';
-import { CreateAppointmentUseCase } from '../../src/appointments/create-appointment.use-case';
+import {
+  CreateAppointmentResult,
+  CreateAppointmentUseCase,
+} from '../../src/appointments/create-appointment.use-case';
 import {
   AvailabilityResult,
   CheckAvailabilityUseCase,
@@ -50,7 +57,7 @@ describe('booking orchestration', () => {
   };
   const repository = {
     transaction: vi.fn(
-      async (operation: (tx: Prisma.TransactionClient) => Promise<typeof persisted>) => {
+      async (operation: (tx: Prisma.TransactionClient) => Promise<CreateAppointmentResult>) => {
         const tx = {} as Prisma.TransactionClient;
         transactions.push(tx);
         return operation(tx);
@@ -60,10 +67,17 @@ describe('booking orchestration', () => {
     findVehicle: vi.fn<() => Promise<{ id: string; customerId: string } | null>>(),
     create: vi.fn<() => Promise<typeof persisted>>(),
   };
+  const key = '12345678-1234-4123-8123-123456789abc';
+  const requests = {
+    claim: vi.fn<() => Promise<BookingClaim>>(),
+    complete: vi.fn<() => Promise<void>>(),
+  };
   const availability = { execute: vi.fn<() => Promise<AvailabilityResult>>() };
 
   beforeEach(async () => {
     transactions.length = 0;
+    requests.claim.mockResolvedValue({ claimed: true });
+    requests.complete.mockResolvedValue(undefined);
     repository.findCustomer.mockResolvedValue({ id: input.customerId });
     repository.findVehicle.mockResolvedValue({ id: input.vehicleId, customerId: input.customerId });
     repository.create.mockResolvedValue(persisted);
@@ -74,6 +88,7 @@ describe('booking orchestration', () => {
       providers: [
         CreateAppointmentUseCase,
         BookingCapacity,
+        { provide: BookingRequestRepository, useValue: requests },
         { provide: AppointmentRepository, useValue: repository },
         { provide: CheckAvailabilityUseCase, useValue: availability },
         {
@@ -93,7 +108,10 @@ describe('booking orchestration', () => {
   });
 
   it('persists only the catalog-derived interval and selected pair in the same transaction', async () => {
-    expect(await useCase.execute(input)).toEqual(persisted);
+    expect(await useCase.execute(input, key)).toEqual({
+      appointment: serializeAppointment(persisted),
+      replayed: false,
+    });
     expect(repository.transaction).toHaveBeenCalledTimes(1);
     expect(availability.execute).toHaveBeenCalledWith(input, transactions[0]);
     expect(repository.create).toHaveBeenCalledWith(
@@ -115,7 +133,7 @@ describe('booking orchestration', () => {
       if (code === 'VEHICLE_NOT_FOUND') repository.findVehicle.mockResolvedValue(null);
       if (code === 'BUSINESS_RULE_VIOLATION')
         repository.findVehicle.mockResolvedValue({ id: 'vehicle', customerId: 'other' });
-      await expect(useCase.execute(input)).rejects.toMatchObject({ code });
+      await expect(useCase.execute(input, key)).rejects.toMatchObject({ code });
       expect(repository.create).not.toHaveBeenCalled();
       expect(repository.transaction).toHaveBeenCalledTimes(1);
     },
@@ -125,7 +143,9 @@ describe('booking orchestration', () => {
     availability.execute.mockRejectedValueOnce(
       new SchedulingError('INVALID_BOOKING_TIME', 'Invalid time.'),
     );
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'INVALID_BOOKING_TIME' });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({
+      code: 'INVALID_BOOKING_TIME',
+    });
     expect(repository.transaction).toHaveBeenCalledTimes(1);
     expect(repository.create).not.toHaveBeenCalled();
   });
@@ -141,7 +161,7 @@ describe('booking orchestration', () => {
       technicianId: null,
       serviceBayId: null,
     });
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'NO_AVAILABILITY' });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({ code: 'NO_AVAILABILITY' });
     expect(repository.transaction).toHaveBeenCalledTimes(1);
     expect(repository.create).not.toHaveBeenCalled();
   });
@@ -153,7 +173,7 @@ describe('booking orchestration', () => {
       availability.execute
         .mockResolvedValueOnce(available)
         .mockResolvedValueOnce({ ...available, technicianId: 't2', serviceBayId: 'b2' });
-      await useCase.execute(input);
+      await useCase.execute(input, key);
       expect(transactions).toHaveLength(2);
       expect(transactions[0]).not.toBe(transactions[1]);
       expect(availability.execute).toHaveBeenNthCalledWith(2, input, transactions[1]);
@@ -170,7 +190,7 @@ describe('booking orchestration', () => {
 
   it('stops after four total attempts and reports retryable contention', async () => {
     repository.create.mockRejectedValue(new BookingConflict('resource'));
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'BOOKING_CONTENTION' });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({ code: 'BOOKING_CONTENTION' });
     expect(repository.transaction).toHaveBeenCalledTimes(4);
     expect(new Set(transactions).size).toBe(4);
   });
@@ -178,7 +198,7 @@ describe('booking orchestration', () => {
   it('honors a configured limit of one total attempt', async () => {
     module.get(ConfigService).set('BOOKING_MAX_ATTEMPTS', 1);
     repository.create.mockRejectedValue(new BookingConflict('resource'));
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'BOOKING_CONTENTION' });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({ code: 'BOOKING_CONTENTION' });
     expect(repository.transaction).toHaveBeenCalledTimes(1);
   });
 
@@ -192,7 +212,7 @@ describe('booking orchestration', () => {
       availableTechnicianCount: 0,
       availableServiceBayCount: 0,
     });
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'NO_AVAILABILITY' });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({ code: 'NO_AVAILABILITY' });
     expect(repository.transaction).toHaveBeenCalledTimes(2);
     expect(repository.create).toHaveBeenCalledTimes(1);
   });
@@ -200,14 +220,14 @@ describe('booking orchestration', () => {
   it('does not retry ambiguous connection failures', async () => {
     const error = new DatabaseUnavailable();
     repository.create.mockRejectedValueOnce(error);
-    await expect(useCase.execute(input)).rejects.toBe(error);
+    await expect(useCase.execute(input, key)).rejects.toBe(error);
     expect(repository.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('propagates unexpected database failures rather than reporting unavailability', async () => {
     const error = new Error('Unexpected database failure');
     repository.create.mockRejectedValueOnce(error);
-    await expect(useCase.execute(input)).rejects.toBe(error);
+    await expect(useCase.execute(input, key)).rejects.toBe(error);
     expect(repository.transaction).toHaveBeenCalledTimes(1);
   });
 
@@ -216,7 +236,7 @@ describe('booking orchestration', () => {
       await operation({} as Prisma.TransactionClient);
       throw new Error('Commit failed');
     });
-    await expect(useCase.execute(input)).rejects.toThrow('Commit failed');
+    await expect(useCase.execute(input, key)).rejects.toThrow('Commit failed');
   });
   it('backs off only after a failed transaction has finished rollback', async () => {
     let activeTransaction = false;
@@ -233,7 +253,10 @@ describe('booking orchestration', () => {
       expect(activeTransaction).toBe(false);
       return Promise.resolve();
     });
-    expect(await useCase.execute(input)).toEqual(persisted);
+    expect(await useCase.execute(input, key)).toEqual({
+      appointment: serializeAppointment(persisted),
+      replayed: false,
+    });
     expect(delay).toHaveBeenCalledTimes(1);
   });
 
@@ -243,9 +266,66 @@ describe('booking orchestration', () => {
       now.mockReturnValue(6001);
       return Promise.reject(new BookingConflict('resource'));
     });
-    await expect(useCase.execute(input)).rejects.toMatchObject({ code: 'BOOKING_TIMEOUT' });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({ code: 'BOOKING_TIMEOUT' });
     expect(repository.transaction).toHaveBeenCalledTimes(1);
     expect(delay).not.toHaveBeenCalled();
     expect(module.get(BookingCapacity).counts.active).toBe(0);
+  });
+
+  it('replays before business reads, allocation, or persistence', async () => {
+    const appointment = serializeAppointment(persisted);
+    requests.claim.mockResolvedValueOnce({
+      claimed: false,
+      fingerprint: bookingFingerprint(input),
+      appointment,
+    });
+    expect(await useCase.execute(input, key)).toEqual({ appointment, replayed: true });
+    expect(repository.findCustomer).not.toHaveBeenCalled();
+    expect(availability.execute).not.toHaveBeenCalled();
+    expect(repository.create).not.toHaveBeenCalled();
+    expect(requests.complete).not.toHaveBeenCalled();
+  });
+
+  it('rejects a different fingerprint without allocating', async () => {
+    requests.claim.mockResolvedValueOnce({
+      claimed: false,
+      fingerprint: 'different',
+      appointment: serializeAppointment(persisted),
+    });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REUSED',
+    });
+    expect(availability.execute).not.toHaveBeenCalled();
+    expect(requests.complete).not.toHaveBeenCalled();
+  });
+
+  it('waits for key ownership in fresh transactions without consuming allocation attempts', async () => {
+    module.get(ConfigService).set('BOOKING_MAX_ATTEMPTS', 1);
+    requests.claim
+      .mockRejectedValueOnce(new BookingKeyBusy())
+      .mockRejectedValueOnce(new BookingKeyBusy());
+    const result = await useCase.execute(input, key);
+    expect(result.replayed).toBe(false);
+    expect(new Set(transactions).size).toBe(3);
+    expect(repository.create).toHaveBeenCalledTimes(1);
+    expect(requests.complete).toHaveBeenCalledWith(key, result.appointment, transactions[2]);
+    expect(delay).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds key waiting by the shared deadline and releases admission', async () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    requests.claim.mockImplementationOnce(() => {
+      now.mockReturnValue(6001);
+      return Promise.reject(new BookingKeyBusy());
+    });
+    await expect(useCase.execute(input, key)).rejects.toMatchObject({ code: 'BOOKING_TIMEOUT' });
+    expect(repository.create).not.toHaveBeenCalled();
+    expect(module.get(BookingCapacity).counts.active).toBe(0);
+  });
+
+  it('fails the whole transaction when saving the response fails', async () => {
+    requests.complete.mockRejectedValueOnce(new Error('Snapshot write failed'));
+    await expect(useCase.execute(input, key)).rejects.toThrow('Snapshot write failed');
+    expect(repository.transaction).toHaveBeenCalledTimes(1);
   });
 });

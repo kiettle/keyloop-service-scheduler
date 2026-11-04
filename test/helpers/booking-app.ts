@@ -68,6 +68,7 @@ export async function createBookingApp(url: string, overrides: Partial<Environme
 
 export async function resetBookingFixtures(prisma: PrismaClient) {
   await prisma.$transaction([
+    prisma.appointmentBookingRequest.deleteMany(),
     prisma.appointment.deleteMany(),
     prisma.technician.updateMany({ data: { isActive: true } }),
     prisma.serviceBay.updateMany({ data: { isActive: true } }),

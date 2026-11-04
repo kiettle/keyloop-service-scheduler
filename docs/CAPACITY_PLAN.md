@@ -1,6 +1,6 @@
 # Booking resilience, evidence, and future capacity
 
-Status — 2026-11-04: **keep the 100-request burst resilience criterion**. Sustained **1,000 successfully committed bookings/second is an unverified future stretch goal**, not submission acceptance or a verified Keyloop traffic requirement. Historical decision: the former 10,000-bookings/second requirement is withdrawn. This revision changes documentation only; no load tests were rerun and no new capacity evidence is claimed.
+Status — 2026-11-04: **keep the 100-request burst resilience criterion**. Sustained **1,000 successfully committed bookings/second is an unverified future stretch goal**, not submission acceptance or a verified Keyloop traffic requirement. Historical decision: the former 10,000-bookings/second requirement is withdrawn. The throughput-goal revision was documentation-only and added no new capacity evidence. The subsequent idempotency burst verification is recorded separately below.
 
 ## Assessment resilience criterion
 
@@ -32,10 +32,14 @@ This is optional future work, not a remaining submission requirement:
 4. For a strict stretch pass, launch all scheduled arrivals, with no dropped work, overload, or technical failures, and establish at least 1,000 successful commits/second during the measured window without a growing backlog. Availability reads, 409s, 503s, or completions deferred into drain do not satisfy the goal. Reconcile persisted counts after quiescence and verify all database invariants. Retain failed reports and investigate ambiguous acknowledgements.
 5. Optimize only demonstrated bottlenecks, one change at a time, with correctness regressions preserved. Measure round trips, query/index costs, transaction residence, and aggregate connection demand before considering more app processes or database capacity. No infrastructure purchase or deployment is authorized.
 
-The existing load runner remains unchanged. It owns disposable databases and ephemeral local app processes, not a remote deployment. Its summary reports are diagnostics; establishing steady-state per-window commit throughput would need further measurement before making a capacity claim. A future local diagnostic command is:
+The load runner now supplies distinct UUID v4 keys and verifies complete request-record counts alongside appointments; its workload sizes, process/pool settings, and existing success criteria remain unchanged. It owns disposable databases and ephemeral local app processes, not a remote deployment. Its summary reports are diagnostics; establishing steady-state per-window commit throughput would need further measurement before making a capacity claim. A future local diagnostic command is:
 
 ```sh
 npm run test:load -- --mode rate --rate 1000 --duration 60 --instances 4 --workload spread --report artifacts/stretch-1000.json
 ```
 
 The command is optional and was not executed for this documentation revision. A configured arrival rate is not proof of successful-booking throughput. See [README](../README.md#booking-capacity-and-load-verification) for the retained burst commands.
+
+## Idempotency follow-up
+
+The approved booking idempotency addition retains all capacity settings and the burst criterion. Ordinary bursts use a different key for each request, preserving resource contention; the dedicated same-key HTTP regression expects one creation and 99 replays. The earlier sustained-rate results remain historical, not evidence for the idempotent path. Current burst verification is recorded in [IDEMPOTENCY](IDEMPOTENCY.md); no sustained-rate rerun is included.

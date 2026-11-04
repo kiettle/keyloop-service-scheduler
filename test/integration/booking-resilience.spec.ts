@@ -139,7 +139,11 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     const [after] = await settings();
     expect(after).toEqual(before);
     expect(await database.prisma.appointment.count()).toBe(0);
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
   });
 
   it('enforces the fixed five-second database transaction limit independently of Prisma', async () => {
@@ -151,7 +155,11 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
       }, performance.now() + 10000),
     ).rejects.toBeInstanceOf(DatabaseUnavailable);
     expect(await database.prisma.appointment.count()).toBe(0);
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
   });
 
   it('returns 503 and rolls back when the remaining Prisma booking budget expires first', async () => {
@@ -165,13 +173,18 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     });
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(503);
     expect(response.body).toMatchObject({ error: { code: 'BOOKING_TIMEOUT' } });
     expect(await database.prisma.appointment.count()).toBe(0);
     expect(capacity.counts.active).toBe(0);
     config.set('BOOKING_TIMEOUT_MS', 5000);
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
   });
 
   it('does not classify an unrelated closed-transaction bug as booking timeout', async () => {
@@ -249,6 +262,7 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     try {
       const response = await application.http
         .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
         .send(bookingInput)
         .expect(503);
       expect(response.body).toMatchObject({ error: { code: 'BOOKING_BUSY' } });
@@ -261,7 +275,11 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     } finally {
       release();
     }
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
   });
 
   it('removes a disconnected HTTP request from the pending queue', async () => {
@@ -282,7 +300,7 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
       port: (server.address() as AddressInfo).port,
       method: 'POST',
       path: '/api/v1/appointments',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() },
     });
     client.on('error', () => {
       /* Expected client-side destruction below. */
@@ -315,6 +333,7 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     try {
       const response = await application.http
         .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
         .send(bookingInput)
         .expect(503);
       expect(response.body).toMatchObject({ error: { code: 'BOOKING_CONTENTION' } });
@@ -324,7 +343,11 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
       release.resolve();
       await holder;
     }
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
   });
   it('reports pool acquisition failure as 503 without starting a booking transaction', async () => {
     const full = deferred(),
@@ -344,6 +367,7 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     try {
       const response = await application.http
         .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
         .send(bookingInput)
         .expect(503);
       expect(response.body).toMatchObject({ error: { code: 'SERVICE_UNAVAILABLE' } });
@@ -353,6 +377,10 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
       release.resolve();
       await Promise.all(holders);
     }
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
   });
 });

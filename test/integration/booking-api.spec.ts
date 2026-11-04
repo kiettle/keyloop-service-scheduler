@@ -71,6 +71,18 @@ describe('booking API with migrated PostgreSQL', () => {
       '/health',
     ]);
     const booking = schema(document, 'CreateAppointmentDto');
+    expect(document.paths['/api/v1/appointments'].post!.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'Idempotency-Key',
+          in: 'header',
+          required: true,
+        }),
+      ]),
+    );
+    expect(document.paths['/api/v1/appointments'].post!.responses['201']).toMatchObject({
+      headers: { 'Idempotency-Replayed': { schema: { enum: ['false', 'true'] } } },
+    });
     const fields = ['customerId', 'dealershipId', 'serviceTypeId', 'startAt', 'vehicleId'];
     expect(booking.required?.toSorted()).toEqual(fields);
     expect(Object.keys(booking.properties ?? {}).toSorted()).toEqual(fields);
@@ -148,7 +160,11 @@ describe('booking API with migrated PostgreSQL', () => {
   });
 
   it('does not reserve or change appointments when documentation is requested', async () => {
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
     const before = await prisma.appointment.findMany();
     await apiDocument();
     await application.http.get('/docs/').expect(200);
@@ -158,6 +174,7 @@ describe('booking API with migrated PostgreSQL', () => {
   it('returns 201 only for a persisted confirmed booking and retrieves it after app restart', async () => {
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(201);
     const created = response.body as AppointmentJson;
@@ -205,6 +222,7 @@ describe('booking API with migrated PostgreSQL', () => {
   ])('rejects %s with 400 and no writes', async (_name, changes) => {
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send({ ...bookingInput, ...changes })
       .expect(400);
     expect((response.body as ErrorJson).error.code).toBe('VALIDATION_ERROR');
@@ -214,6 +232,7 @@ describe('booking API with migrated PostgreSQL', () => {
   it('rejects malformed JSON with the same safe error envelope', async () => {
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .set('Content-Type', 'application/json')
       .send('{broken')
       .expect(400);
@@ -229,6 +248,7 @@ describe('booking API with migrated PostgreSQL', () => {
   ])('returns 404 for nonexistent %s', async (field, code) => {
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send({ ...bookingInput, [field]: randomUUID() })
       .expect(404);
     expect((response.body as ErrorJson).error.code).toBe(code);
@@ -240,6 +260,7 @@ describe('booking API with migrated PostgreSQL', () => {
     async (startAt) => {
       const response = await application.http
         .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
         .send({ ...bookingInput, startAt })
         .expect(422);
       expect((response.body as ErrorJson).error.code).toBe('INVALID_BOOKING_TIME');
@@ -250,6 +271,7 @@ describe('booking API with migrated PostgreSQL', () => {
   it('rejects customer/vehicle mismatch with 422 and no writes', async () => {
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send({ ...bookingInput, vehicleId: id.vehicle3 })
       .expect(422);
     expect((response.body as ErrorJson).error.code).toBe('BUSINESS_RULE_VIOLATION');
@@ -260,6 +282,7 @@ describe('booking API with migrated PostgreSQL', () => {
     await prisma.serviceType.update({ where: { id: id.oilChange }, data: { isActive: false } });
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(422);
     expect((response.body as ErrorJson).error.code).toBe('BUSINESS_RULE_VIOLATION');
@@ -280,6 +303,7 @@ describe('booking API with migrated PostgreSQL', () => {
     });
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(409);
     expect((response.body as ErrorJson).error.code).toBe('NO_AVAILABILITY');
@@ -295,10 +319,15 @@ describe('booking API with migrated PostgreSQL', () => {
       where: { dealershipId: id.dealershipA },
       data: { isActive: false },
     });
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(409);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(409);
     expect(await prisma.appointment.count()).toBe(0);
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send({ ...bookingInput, dealershipId: id.dealershipB })
       .expect(201);
     expect(response.body).toMatchObject({ technicianId: id.technicianB1, serviceBayId: id.bayB1 });
@@ -309,6 +338,7 @@ describe('booking API with migrated PostgreSQL', () => {
     await prisma.serviceBay.update({ where: { id: id.bayA1 }, data: { isActive: false } });
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(201);
     expect(response.body).toMatchObject({ technicianId: id.technicianA3, serviceBayId: id.bayA2 });
@@ -319,6 +349,7 @@ describe('booking API with migrated PostgreSQL', () => {
     await prisma.serviceBay.update({ where: { id: id.bayA2 }, data: { isActive: false } });
     const first = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send({ ...bookingInput, startAt: '2035-01-15T17:00:00+07:00' })
       .expect(201);
     expect(first.body).toMatchObject({
@@ -327,6 +358,7 @@ describe('booking API with migrated PostgreSQL', () => {
     });
     await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send({ ...bookingInput, startAt: at('10:30').toISOString() })
       .expect(201);
     expect(await prisma.appointment.count()).toBe(2);
@@ -345,6 +377,7 @@ describe('booking API with migrated PostgreSQL', () => {
     });
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(201);
     expect(response.body).toMatchObject({ technicianId: id.technicianA1, serviceBayId: id.bayA1 });
@@ -372,8 +405,16 @@ describe('booking API with migrated PostgreSQL', () => {
       availableServiceBayCount: 1,
     });
     expect(await prisma.appointment.count()).toBe(0);
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(201);
-    await application.http.post('/api/v1/appointments').send(bookingInput).expect(409);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(201);
+    await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
+      .send(bookingInput)
+      .expect(409);
     const after = await application.http
       .get(endpoint)
       .query({ ...query, startAt: at('10:15').toISOString() })
@@ -513,6 +554,7 @@ describe('booking API with migrated PostgreSQL', () => {
     );
     const response = await application.http
       .post('/api/v1/appointments')
+      .set('Idempotency-Key', randomUUID())
       .send(bookingInput)
       .expect(500);
     expect((response.body as ErrorJson).error).toEqual({
@@ -538,6 +580,7 @@ describe('booking API with migrated PostgreSQL', () => {
     try {
       const response = await application.http
         .post('/api/v1/appointments')
+        .set('Idempotency-Key', randomUUID())
         .send(bookingInput)
         .expect(503);
       expect((response.body as ErrorJson).error.code).toBe('SERVICE_UNAVAILABLE');

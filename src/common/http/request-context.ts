@@ -2,6 +2,7 @@ export interface HttpRequest {
   method: string;
   url: string;
   requestId?: string;
+  rawHeaders: string[];
 }
 
 export interface HttpResponse {

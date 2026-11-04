@@ -4,6 +4,8 @@ Date: 2026-11-03, Asia/Ho_Chi_Minh. **Approved and implemented.** The user appro
 
 Current goal revision — 2026-11-04: keep the **100-request burst** resilience criterion; **1,000 successfully committed bookings/second is an unverified future stretch goal**, not submission acceptance or a verified Keyloop traffic requirement. Historical decision: the former 10,000-bookings/second requirement is withdrawn. See [CAPACITY_PLAN.md](CAPACITY_PLAN.md). All prototype and integrated measurements below remain historical evidence for their stated source/configuration; no load tests were rerun for this documentation-only revision.
 
+Subsequent approved addition: [durable booking idempotency](IDEMPOTENCY.md) adds an atomic key claim and saved response to the existing transaction. Historical prototype/load numbers below predate that change. Resource allocation, exclusion constraints, capacity limits, and deadlines remain; distinct-key regressions preserve the original contention tests.
+
 On 2026-11-04 the user approved fixed role/database timeout defaults, replacing per-booking configuration. Current policy is 250 ms lock, 2 s statement, and 5 s transaction timeout; the application retains its shared deadline and remaining-budget Prisma timeout. The original prototype/time-budget experiments below are historical. Setup and verification are recorded in DATABASE.md and LOAD_RESULTS.md.
 
 ## Target and scope

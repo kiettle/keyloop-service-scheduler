@@ -6,11 +6,11 @@ Review date: 2026-11-04 (Asia/Ho_Chi_Minh). Phase 5 covers final audit, demonstr
 
 **Overall submission: NOT READY.** The required recorded video and final committed/pushed repository handoff remain manual outstanding items. A prepared video outline is not a recorded video. No commit, push, recording, or reviewer-access verification was performed automatically.
 
-**Software/documentation candidate: READY WITH KNOWN LIMITATIONS.** All current automated checks, clean-source installation, demo requests, and documentation checks passed. The limitations below are explicit; this is an assessment backend, not a production-readiness claim. Earlier phase results remain historical evidence.
+**Software/documentation candidate: READY WITH KNOWN LIMITATIONS.** The earlier Phase 5 automated checks, clean-source installation, demo requests, and documentation checks passed; the subsequent approved idempotency addition is covered separately in [IDEMPOTENCY](IDEMPOTENCY.md). The limitations below are explicit; this is an assessment backend, not a production-readiness claim. Earlier phase results remain historical evidence.
 
 ## Scope and evidence
 
-Source hierarchy: original assessment, SPEC v2, latest explicit phase approval, AGENTS operating rules. The user's approved phase numbering differs from SPEC section 14; Phase 5 deliberately combines final audit/submission preparation with explicitly selected Swagger. No P1/P2 business features are required or added. All three existing business API contracts remain unchanged.
+Source hierarchy: original assessment, SPEC v2, latest explicit phase approval, AGENTS operating rules. The user's approved phase numbering differs from SPEC section 14; Phase 5 deliberately combines final audit/submission preparation with explicitly selected Swagger. The subsequent explicit approval adds durable booking idempotency as the selected P1 feature. POST now requires a UUID v4 Idempotency-Key and returns an Idempotency-Replayed header; GET contracts remain unchanged. No other P1/P2 features are added. Earlier matrices and installation evidence below describe the Phase 5 baseline; current idempotency verification is in [IDEMPOTENCY](IDEMPOTENCY.md).
 
 Evidence abbreviations used in the matrices:
 
@@ -154,7 +154,7 @@ This verifies a complete working-source copy, not a committed checkout, remote c
 
 - PostgreSQL exclusions enforce exclusivity across instances; conflict-aware insertion and deterministic selection still do not guarantee fairness or successful admission under arbitrary contention.
 - The 100-request burst remains the assessment resilience criterion. Sustained 1,000 successfully committed bookings/second is an unverified future stretch goal, not a submission requirement; see CAPACITY_PLAN and LOAD_RESULTS. Historical local diagnostics do not establish current-source or production capacity. No load tests were rerun for the 2026-11-04 documentation-only goal revision.
-- Availability is advisory. There is no exactly-once client request guarantee; commit acknowledgement loss can leave an unknown complete outcome. A running booking may commit after client disconnect.
+- Availability is advisory. Same-key retries recover committed bookings; different keys are independent and response delivery is not guaranteed. A running booking may commit after client disconnect. Successful keys are retained indefinitely; authenticated scoping and an expiry policy remain future decisions.
 - Authentication, vehicle-overlap exclusion, cancellation/rescheduling, operating hours/shifts, and concurrent administrative mutation remain outside scope. Swagger is open for the assessment demo.
 - Concurrency tests use two app instances in one process; diagnostic load tests also use separate local Node processes. Multi-host/network faults, production load/permissions, and populated-data migrations remain unverified.
 - Structured logs are implemented; production metrics/tracing are proposals. The 13 moderate development-inclusive audit findings remain disclosed.
@@ -165,6 +165,12 @@ This verifies a complete working-source copy, not a committed checkout, remote c
 The user approved keeping the 100-request burst resilience criterion and making sustained 1,000 successful bookings/second an unverified future stretch goal. Updated project instructions, specification, README, design, capacity guidance, concurrency notes, load-result context, and demo/review guidance. Historical measurements and failed trials remain; no application, database, configuration, API, or test changes were made.
 
 Verification: `npm run format:check` and `git diff --check` passed. A local documentation check resolved 41 relative file/heading targets across the ten changed Markdown files. A baseline comparison confirmed the Git index and all 76 tracked non-Markdown files were unchanged. Reviewed remaining references to the withdrawn target as historical context only. No load tests or correctness suites were rerun for this documentation-only change; existing test counts and performance results above remain historical evidence.
+
+## Durable idempotency follow-up — 2026-11-04
+
+The explicitly approved P1 addition is implemented: required booking key header, canonical fingerprints, atomic PostgreSQL claims/appointments/saved responses, replay before dynamic validation, changed-body rejection, bounded same-key waiting, and indefinite successful-key retention. Other business features and infrastructure remain excluded. The migration is additive and was verified in owned temporary databases; developer data was not migrated or reset.
+
+Final checks passed: Prisma generation/validation, build, typecheck, lint, formatting, whitespace, 138 default tests, and 175 PostgreSQL tests. Existing strict contention checks remain; the six-case focused concurrency command passed as well. The three 100-request load profiles passed with complete key-record and appointment counts and no invariant violations. The replay/mismatch demo was executed against isolated data, including exact-byte replay equality. All three updated diagrams parsed/rendered after correcting punctuation. Source fingerprint, exact commands, counts, load limitations, observed review corrections, and cleanup are recorded in [IDEMPOTENCY](IDEMPOTENCY.md#executed-evidence--2026-11-04). No current sustained-rate claim, full fresh npm installation, commit, push, video, or production deployment is added by this follow-up.
 
 ## Handoff
 

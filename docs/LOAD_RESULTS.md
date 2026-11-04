@@ -125,3 +125,9 @@ The integration helper now applies the same SQL after migrations/seed in each ve
 - A real HTTP/SQL trace against a freshly migrated/seeded/configured temporary database returned 201 and persisted exactly one row. Eight Prisma query events were captured (six SELECTs, INSERT, COMMIT), with zero set_config/timeout-configuration statements. Driver transaction setup may not appear in this event stream. The first standalone probe failed because ts-node was absent from its child-process PATH; rerunning through npm exec supplied the local binary path and passed. Both probes cleaned up their owned databases.
 
 These checks establish configuration and functional behavior, not a measured throughput improvement. Earlier load results used the earlier timeout policy; no sustained capacity rerun or 10,000-RPS production claim is made.
+
+## Idempotency burst follow-up — 2026-11-04
+
+The subsequent approved idempotency implementation was verified separately from the historical measurements above. The final full suite passed 138 default and 175 PostgreSQL tests, including the 100-request same-key replay case and original strict resource-contention assertions. The three separate-process, distinct-key 100-request burst profiles passed: spread and adjacent intervals each confirmed/persisted 100 bookings and complete request records; the hotspot produced one confirmed row/key record and 99 availability conflicts. No overload, technical errors, dropped arrivals, overlaps, invalid associations, or incomplete key records occurred. No sustained-rate rerun was performed.
+
+See [IDEMPOTENCY — executed evidence](IDEMPOTENCY.md#executed-evidence--2026-11-04) for exact commands, source fingerprint, environment, latency/launch measurements, reports, corrections, and cleanup. Earlier rate results remain historical; no current-source sustained or production capacity is established.

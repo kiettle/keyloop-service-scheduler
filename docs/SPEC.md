@@ -82,7 +82,7 @@ A successful P0 submission must:
 | P1-04 | Service type listing | Read-only endpoint to simplify API exploration |
 | P1-05 | Lightweight performance evidence | A reproducible benchmark and actual recorded numbers (never invented) |
 
-**P1 prioritization:** Prefer **cancellation** as a compact real-world workflow if P0 is complete. Choose **idempotency** only if it can be implemented correctly and tested, not with a memory-only map. Opening hours are useful but require time-zone/edge-case care. Do not add all three merely to tick boxes.
+**Approved P1 selection — 2026-11-04:** Durable booking idempotency is the selected addition after P0. Cancellation and opening hours remain outside the approved scope. This is a project choice, not an extra Keyloop requirement.
 
 ### 2.3 P2 — document as future work, do not build
 
@@ -679,21 +679,24 @@ Assumed business policy:
 
 ### 10.2 Durable idempotency
 
-**Request:** `Idempotency-Key` header on `POST /appointments`.
+**Approved contract — 2026-11-04:** Require exactly one UUID v4 `Idempotency-Key` header on `POST /api/v1/appointments`; GET endpoints do not require it. Missing, malformed, or repeated headers return `400 VALIDATION_ERROR`. Normalize UUIDs to lowercase and timestamps to UTC milliseconds; fingerprint the endpoint/version and all five fields in fixed order using SHA-256. Keys are globally scoped to this endpoint while authentication is absent.
 
-Do not implement until the design includes a durable table/unique key and a strategy for concurrent in-flight duplicates. Since there is no authenticated actor in P0, define the scope explicitly (e.g., globally unique UUID key for demo requests). Store a canonical request fingerprint to detect key reuse with different payloads.
+- Same key + equivalent body after successful commit returns **201**, the original saved appointment body, and `Idempotency-Replayed: true`; first creation uses `false`. Each attempt retains its own request ID.
+- Same successfully used key + different body returns `409 IDEMPOTENCY_KEY_REUSED` before dynamic business checks.
+- Replay precedes current time, catalog, resource, and availability validation; body/header syntax remains validated.
+- Use one additional durable table with a unique UUID key, fingerprint, unique nullable appointment FK, nullable JSONB response snapshot, and creation time. Pair the nullable columns with a SQL CHECK. A claim exists uncommitted until finalized; all application failures roll it back.
+- Atomically claim using INSERT ON CONFLICT (key) DO NOTHING; a subsequent READ COMMITTED statement reads a completed winner. Claim, appointment, and saved response commit together. Never separately commit processing state or silently reclaim incomplete/corrupt stored records.
+- Concurrent duplicates wait within the existing shared deadline. A key-claim-only lock timeout rolls back and waits with 25–50 ms jitter before a fresh transaction; waiting does not consume allocation attempts. An unresolved deadline returns `503 BOOKING_TIMEOUT` and `Retry-After: 1`.
+- Keep successful keys indefinitely; failures do not consume keys. Do not add cleanup infrastructure or automatically replay ambiguous connection failures on the server.
+- Clients reuse one key for one intent, including uncertain outcomes; different keys remain independent and may create separate bookings. This is not a vehicle-overlap rule or authentication.
 
-Assumed behavior:
+**AC-P1-I01:** Sequential and concurrent same-key/equivalent-body requests return the saved result with exactly one appointment and complete key record.
+**AC-P1-I02:** Same successful key/different body is rejected without additional booking.
+**AC-P1-I03:** Rollback/crash-before-commit leaves no key/appointment; post-commit lost responses recover across restart with the same key.
+**AC-P1-I04:** A 100-request same-key burst across two instances confirms once and replays 99 times; the original distinct-key contention and resource invariants remain.
+**AC-P1-I05:** Header validation, canonicalization, replay after time/catalog changes, bounded waiting, cancellation, and corrupt-state safety are verified against real HTTP/PostgreSQL.
 
-- Same key + same body after a successful booking returns the original appointment result; document whether replay uses `200` or `201` and be consistent.
-- Same key + different body returns `409 IDEMPOTENCY_KEY_REUSED`.
-- Concurrent same-key requests cannot create two appointments; their outcomes should be deterministic and documented.
-- Result persistence and booking confirmation are transactionally consistent.
-- Define cleanup/retention policy in design (retention automation not necessary for P1 demo).
-
-**AC-P1-I01:** Two identical same-key requests yield one appointment.  
-**AC-P1-I02:** Same key with different payload is rejected.  
-**AC-P1-I03:** Concurrent same-key requests do not create duplicates or orphan idempotency state.
+See [IDEMPOTENCY.md](IDEMPOTENCY.md) for the design, client contract, and executed evidence.
 
 ### 10.3 Simple dealership operating hours
 
@@ -1010,7 +1013,7 @@ Clearly document the following instead of concealing them:
 6. Fixed durations; no buffers, overruns, or multi-stage jobs.
 7. Deterministic first-fit selection may create hotspots and unfair utilization.
 8. Bounded conflict retries may return a transient failure under sustained contention.
-9. No cancellation, durable idempotency, or reservation expiry unless corresponding P1 is delivered.
+9. No cancellation or reservation expiry. Durable booking idempotency is the approved P1 addition; its successful keys are retained indefinitely.
 10. The backend has no customer-facing UI, which is explicitly allowed by the assessment.
 
 Future scaling should follow observed demand: measure scheduler query plans and transaction contention, consider resource selection policy changes, introduce a real identity/tenant boundary, and only then assess additional services or messaging.
