@@ -28,12 +28,13 @@
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "prisma db seed",
-    "db:test:up": "docker compose --profile test up -d --wait postgres-test",
+    "db:test:up": "docker compose --profile test up -d --wait postgres-test redis-test",
     "test:integration": "vitest run --config vitest.integration.config.mts",
     "test:e2e": "vitest run --config vitest.integration.config.mts test/integration/booking-api.spec.ts",
     "test:concurrency": "vitest run --config vitest.integration.config.mts test/integration/booking-concurrency.spec.ts",
     "test:all": "npm test && npm run test:integration",
-    "test:load": "ts-node test/load/run-bookings.ts"
+    "test:load": "ts-node test/load/run-bookings.ts",
+    "cache:up": "docker compose up -d --wait redis"
   },
   "dependencies": {
     "@nestjs/common": "11.2.8",
@@ -46,6 +47,7 @@
     "class-transformer": "0.5.1",
     "class-validator": "0.14.4",
     "dotenv": "16.6.1",
+    "ioredis": "6.0.0",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2"
   },

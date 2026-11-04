@@ -82,7 +82,7 @@ A successful P0 submission must:
 | P1-04 | Service type listing | Read-only endpoint to simplify API exploration |
 | P1-05 | Lightweight performance evidence | A reproducible benchmark and actual recorded numbers (never invented) |
 
-**Approved P1 selection — 2026-11-04:** Durable booking idempotency is the selected addition after P0. Cancellation and opening hours remain outside the approved scope. This is a project choice, not an extra Keyloop requirement.
+**Approved P1 selection — 2026-11-04:** Durable booking idempotency and service-type listing with a narrowly scoped Redis catalog cache are the selected additions after P0. Cancellation and opening hours remain outside the approved scope. This is a project choice, not an extra Keyloop requirement.
 
 ### 2.3 P2 — document as future work, do not build
 
@@ -92,7 +92,7 @@ A successful P0 submission must:
 - Multi-technician services, parallel stages, variable service duration and buffer times.
 - Rescheduling, waitlists, notifications, approvals, payments, and audit history.
 - Inventory dependencies, parts availability, service estimates, customer-facing frontend.
-- Advanced matching/optimization, Kafka, Redis, microservices, event sourcing, orchestration, Kubernetes.
+- Advanced matching/optimization, Kafka, Redis uses beyond the approved reference-list caches, microservices, event sourcing, orchestration, Kubernetes.
 
 ---
 
@@ -744,6 +744,64 @@ The assessment resilience criterion is a **100-request burst**, released from a 
 
 Use isolated PostgreSQL data, real HTTP endpoints, and separate app processes for load verification. Future sustained-rate investigations should use open-model arrival scheduling and report actual offered and successful completion rates, warmup/drain time, dropped iterations, per-status counts, queue/connection/lock pressure, p95/p99, and generator limits. Prepare enough resource/time capacity for successful-booking profiles and test sold-out contention separately; expected 409s and rejected 503s do not count as successful-booking throughput. Retain failed trials with source/environment details and verify persisted invariants. Historical results do not establish current or production capacity; numeric production latency/error SLOs remain unagreed. See [CAPACITY_PLAN.md](CAPACITY_PLAN.md) for evidence and future benchmarking guidance.
 
+### Approved booking lookups and customer history — 2026-11-04
+
+These optional assessment extensions support fetching IDs in Swagger before booking:
+
+| GET endpoint | Public item fields | Order |
+| --- | --- | --- |
+| `/api/v1/customers` | `id`, `name` | Name, ID ascending |
+| `/api/v1/customers/:customerId/vehicles` | `id`, `customerId`, `vin`, `make`, `model` | ID ascending |
+| `/api/v1/dealerships` | `id`, `name`, `timeZone` | Name, ID ascending |
+| `/api/v1/customers/:customerId/appointments` | Existing public appointment response | Start time, ID descending |
+
+All four return `{ items, page, limit, hasNext }`. Defaults are `page=1&limit=20`; limit is 1–100. Pages must be positive integers with a supported database offset (at most 2,147,483,647). Unknown query fields, repeated parameters, malformed IDs, and invalid pagination return `400 VALIDATION_ERROR`. One extra row determines `hasNext`; no total-count query is issued. Known parents without results return an empty page; unknown customers return `404 CUSTOMER_NOT_FOUND`. Database failures retain the existing safe error contract.
+
+Customers can have multiple vehicles and appointments. History includes all stored statuses, past and future, and remains scoped to the requested customer. Offset pages can shift during concurrent inserts; they are not a frozen snapshot. Booking still accepts only its original five fields and assigns technician/bay automatically.
+
+Workflow: fetch customers → owned vehicles → dealerships → service types → availability → POST booking → customer appointment history. Copy IDs from GET responses into Swagger requests; there are no dynamic dropdowns. Service types and dealership pages use optional shared Redis cache-aside. Customer, vehicle, and appointment-history reads use PostgreSQL directly. The assessment has no authentication: production exposure of customer/vehicle/history data requires authorization.
+
+### Dealership page caching
+
+Redis also caches `GET /api/v1/dealerships`. Customer lists, owned vehicles, appointment history/retrieval, availability, booking, and idempotency remain uncached. CatalogModule and DirectoryModule share one optional Redis connection per application instance; domain cache providers validate their public payloads. There is no global interceptor or generic repository/cache framework.
+
+The existing `CATALOG_CACHE_NAMESPACE` setting namespaces both caches. Keys are:
+
+- `<namespace>:service-types:v1:active`
+- `<namespace>:dealerships:v1:page:<page>:limit:<limit>`
+
+Validated numeric page/limit values form the dealership keys. Cached pages retain `{ items, page, limit, hasNext }` and must match the requested pagination/public fields; hasNext=true requires a full page. Invalid values are misses. Successful empty pages are cached; database errors are not. Every entry uses fixed `SET ... EX 300`, and hits do not extend expiry. Redis failures fall back to PostgreSQL; database failures retain the existing safe error contract.
+
+No reference-data write API exists. After controlled dealership changes/seeding, call `DirectoryCache.invalidateDealerships()` **after commit** to clear all dealership pages, across page numbers and limits. It returns false and logs on failure. It filters cursor-based SCAN results by the exact namespace/entity prefix and passes each batch of matching keys to one UNLINK command. The service-catalog key is preserved. SCAN traverses the Redis database incrementally; MATCH filters affected keys, and COUNT is a work hint rather than a strict batch-size limit. One logical invalidation may require several commands and is not atomic across batches. Concurrent stale refills remain possible, and invalidation cannot undo a committed database update.
+
+For manual maintenance, use the actual namespace and delete only matching dealership keys:
+
+```sh
+docker compose exec -T redis redis-cli --scan --pattern 'service-scheduler:local:dealerships:v1:*' |
+  while IFS= read -r key; do
+    docker compose exec -T redis redis-cli UNLINK "$key"
+  done
+```
+
+These maintenance scans run outside request handling. TTL and Redis maxmemory bound retained cache data; arbitrarily deep pagination should be revisited only if measurements justify it. The optional technician-list endpoint/cache has been removed; technician selection and qualification checks remain internal to scheduling. Any old roster-cache entries expire naturally without a cleanup operation. Tests establish query avoidance, not a latency or throughput gain.
+
+### Approved catalog refresh demonstration — 2026-11-04
+
+This addition is test-local maintenance evidence, not a new API or production writer. After committing an isolated PostgreSQL service update, reread the complete active catalog through CatalogRepository and replace its existing Redis value through ServiceCatalogCache.set(), without invalidation. SET EX 300 resets expiry; ordinary GET hits do not. Verify Redis before the next GET and verify a second app instance serves the updated list without a catalog database query. An aborted transaction must leave both database and cache unchanged and skip refresh.
+
+Retain grouped SCAN/UNLINK invalidation for paginated dealership lists, preserving the service-catalog key. No item patching across cached pages, new abstractions, locks, workers, configuration, or dependencies are included. Cache replacement remains best effort: set() returns no storage confirmation. Database-read failure after commit or failed/overlapping refreshes may leave stale cached data until expiry or another refresh. PostgreSQL and Redis are not one atomic transaction; all booking/availability validation remains authoritative in PostgreSQL.
+
+### Approved service catalog cache — 2026-11-04
+
+GET /api/v1/service-types returns active global services as `{ id, name, durationMinutes }[]`, ordered by name then ID; empty catalogs return 200 []. This service-selection read uses shared Redis cache-aside only. A listed service is not a dealership resource/availability guarantee.
+
+- Use `<CATALOG_CACHE_NAMESPACE>:service-types:v1:active` and atomic SET EX 300. Do not refresh TTL on a hit. Cache successful empty results; never cache failures. Invalid JSON/shape is a miss.
+- Redis is optional: absent REDIS_URL bypasses caching; a configured URL requires an explicit namespace. Deployments/databases use separate namespaces, replicas share one, and tests use dedicated Redis plus UUID namespaces.
+- Connect in the background using built-in client lifecycle/timeouts; cache errors fall back to PostgreSQL. Keep DB reads outside cache-error catches and retain existing safe errors.
+- Do not change scheduling/booking/idempotency reads. Warm stale catalog entries must not affect authoritative duration/status validation.
+- No admin API exists. Provide a catalog-specific invalidate() method and document targeted DEL after controlled data changes/seeding. Future writers invalidate after commit; failure cannot roll back a committed update. TTL/invalidation offer eventual consistency, with a possible stale-refill race.
+- No generic framework, coalescing, distributed locks, Pub/Sub, refresh job, or availability caching. Measure database query avoidance; do not infer performance capacity.
+
 ### NFR-04 — Observability
 
 At minimum, record structured logs for: booking request, validation rejection, no available pair, exclusion conflict/retry, booking confirmed, and unexpected database failure. Include `requestId`, `dealershipId`, `serviceTypeId`, outcome and elapsed time where available; avoid customer names, VINs, and raw request bodies in logs.
@@ -784,9 +842,9 @@ Seed scripts should be repeatable (idempotent upserts or a clear reset workflow)
 
 ### 12.2 Reviewer demo script
 
-1. Show service catalog / README fixture IDs.
+1. Fetch customers, owned vehicles, dealerships, and service types in Swagger.
 2. Call availability for a free interval; show both resource types available.
-3. Create an appointment; retrieve it and show automatically assigned technician and bay.
+3. Create an appointment; retrieve it and list the customer’s history, showing automatically assigned technician and bay.
 4. Request a conflicting interval and show rejection **or** automatic selection of another valid resource pair.
 5. Run the dedicated 20-request concurrency test with only one pair, showing exactly one confirmed row afterward.
 6. Explain the exclusion constraint, transaction/retry strategy, tests, and design trade-offs.
@@ -936,7 +994,7 @@ If any gate fails, state it explicitly; do not mark the project finished.
 | Automatic assignment | Simple client contract, controlled matching | No employee/customer preference controls |
 | Fixed service duration | Deterministic interval calculations | Real service time varies |
 | READ COMMITTED + exclusion constraints | Simple concurrency model with DB enforcement | Allocation races require classified retries |
-| No external cache | Immediate DB source of truth for availability | More DB reads; measure before optimization |
+| Reference-list Redis cache | Service types and dealership pages with five-minute expiry and DB fallback | Optional dependency and stale display data; availability/booking remain direct DB reads |
 | No auth in demo | Prioritizes requested functionality in one week | Not safe for internet-facing production deployment |
 
 **Questions you should be able to answer:**

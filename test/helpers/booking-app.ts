@@ -51,6 +51,9 @@ export async function createBookingApp(url: string, overrides: Partial<Environme
     setupSwagger(app);
     await app.init();
     configureHttpServer(app.getHttpServer() as Server);
+    // Own one listener per fixture instead of opening/closing a server per HTTP request.
+    await app.listen(0, '127.0.0.1');
+    // Keep a non-optional reference for the cleanup callback.
     const initialized = app;
     return {
       app: initialized,

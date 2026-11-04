@@ -51,7 +51,7 @@ Modified: `AGENTS.md` (phase authorization and current spec version reference).
 Created:
 
 - Application: `src/main.ts`, `src/app.module.ts`, `src/config/environment.ts`, `src/database/database.module.ts`, `src/database/prisma.service.ts`, `src/health/health.module.ts`, `src/health/health.controller.ts`.
-- Database setup: `compose.yaml`, `prisma/schema.prisma`, `prisma.config.ts`, `scripts/check-database.cjs`.
+- Database setup: `docker-compose.yaml` (named `compose.yaml` during this phase), `prisma/schema.prisma`, `prisma.config.ts`, `scripts/check-database.cjs`.
 - Tests: `test/environment.spec.ts`, `test/health.spec.ts`, `jest.config.cjs` (initial config, subsequently removed).
 - Tooling: `package.json`, `package-lock.json`, `tsconfig.json`, `tsconfig.build.json`, `eslint.config.mjs`, `.prettierrc.json`, `.prettierignore`, `.gitignore`, `.npmrc`, `.nvmrc`.
 - Configuration/documentation: `.env.example`, `README.md`, this record. An ignored local `.env` was copied from the example for verification.

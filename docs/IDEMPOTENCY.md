@@ -57,7 +57,7 @@ Execution results for the completed implementation are recorded below. Historica
 
 ## Executed evidence — 2026-11-04
 
-Measured working candidate, based on commit 9fb59f40eb21a081ddd285d61b6c09cdcaf99f3a. Source SHA-256: `123ec55363b05f329d11f10ac33c87fe55fffd5255f92209638bdfb76ab468ec`. The digest covers 76 files: sorted relative paths and contents under src, prisma, scripts, and test, plus package/lock files, both tsconfigs, both Vitest configs, .env.example, compose.yaml, and prisma.config.ts; each path and content is followed by a NUL separator. Documentation is excluded. The digest remained unchanged through the final correctness suite, burst runs, and executed demo. This is working-source evidence, not a committed-checkout or deployment claim.
+Measured working candidate, based on commit 9fb59f40eb21a081ddd285d61b6c09cdcaf99f3a. Source SHA-256: `123ec55363b05f329d11f10ac33c87fe55fffd5255f92209638bdfb76ab468ec`. The digest covers 76 files: sorted relative paths and contents under src, prisma, scripts, and test, plus package/lock files, both tsconfigs, both Vitest configs, .env.example, compose.yaml (the historical filename; now docker-compose.yaml), and prisma.config.ts; each path and content is followed by a NUL separator. Documentation is excluded. The digest remained unchanged through the final correctness suite, burst runs, and executed demo. This is working-source evidence, not a committed-checkout or deployment claim.
 
 Final commands and outcomes:
 

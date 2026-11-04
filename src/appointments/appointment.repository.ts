@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { PaginationQueryDto, paginationWindow } from '../common/http/pagination';
 import { PrismaService } from '../database/prisma.service';
 import { remainingBookingTime } from './booking-deadline';
 import { BookingConflict, BookingError } from './booking.error';
@@ -83,6 +84,19 @@ export class AppointmentRepository {
     }
     // The only other arbiters in the current schema are the two resource exclusions.
     throw new BookingConflict('resource');
+  }
+
+  findByCustomer(customerId: string, query: PaginationQueryDto) {
+    return this.prisma.customer.findUnique({
+      where: { id: customerId },
+      select: {
+        appointments: {
+          select: appointmentSelect,
+          orderBy: [{ startAt: 'desc' }, { id: 'desc' }],
+          ...paginationWindow(query),
+        },
+      },
+    });
   }
 
   async findById(id: string) {

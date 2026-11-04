@@ -8,7 +8,7 @@ Backend-only implementation of **Keyloop Scenario A**. A customer requests a ser
 | Availability for the entire service duration | Qualification/active/dealership filters, half-open overlap queries, PostgreSQL exclusions |
 | Persistent confirmed associations            | Atomic appointment row and retrieval after app restart                                    |
 
-Implemented: booking, retrieval, advisory availability, strict validation, safe errors, structured logs/request IDs, bounded fresh-transaction retries, Swagger, reproducible seeds/migrations, and real PostgreSQL/HTTP/concurrency tests. Durable booking idempotency is the explicitly approved P1 addition.
+Implemented: booking, retrieval, advisory availability, strict validation, safe errors, structured logs/request IDs, bounded fresh-transaction retries, Swagger, reproducible seeds/migrations, and real PostgreSQL/HTTP/concurrency tests. Durable booking idempotency, a cached service-selection catalog, booking-data lookups, and customer appointment history are the explicitly approved additions.
 
 - [System design and diagrams](docs/SYSTEM_DESIGN.md)
 - [Requirements, executed evidence, and submission readiness](docs/FINAL_REVIEW.md)
@@ -19,7 +19,7 @@ Implemented: booking, retrieval, advisory availability, strict validation, safe 
 
 NestJS **11.2.8**, TypeScript **5.9.3**, Prisma/client/adapter **7.10.1**, PostgreSQL **17.6-alpine**, Vitest **4.1.11**, and Swagger **11.4.7**. Direct versions are pinned; commit `package-lock.json` and use `npm ci`. A scoped override pins Swagger's js-yaml to patched 5.4.1; the existing Nest/Multer override is retained. Audits and their limits are recorded in the final review.
 
-One modular monolith: thin controllers call application use cases; concrete repositories own SQL/transactions; shared scheduling owns interval and selection rules. HTTP validation/filter/logging and Prisma connection lifecycle are shared infrastructure. No generic repository framework or additional services.
+One modular monolith: thin controllers call application use cases; concrete repositories own SQL/transactions; shared scheduling owns interval and selection rules. HTTP validation/filter/logging and Prisma connection lifecycle are shared infrastructure. Repositories remain concrete; optional Redis caches service types and dealership pages.
 
 Booking uses READ COMMITTED and a single-item conflict-aware insert with both GiST exclusions. A skipped resource-conflict insert rolls back before a fresh allocation attempt; an identity collision remains unexpected. There are no explicit resource-row locks. Four total allocation attempts with jittered backoff is the default; settled exhaustion is 409 and unresolved contention is 503. Success follows commit. A bounded per-process queue protects capacity, and all attempts share one booking deadline.
 
@@ -33,6 +33,8 @@ Verification covers the available macOS arm64 environment and PostgreSQL Docker 
 
 ## First installation
 
+Docker Compose services are defined in [`docker-compose.yaml`](docker-compose.yaml).
+
 From a new checkout:
 
 ```sh
@@ -42,6 +44,7 @@ cp .env.example .env
 npm ci
 npm run prisma:generate
 npm run db:up
+npm run cache:up
 npm run prisma:validate
 npm run db:migrate
 npm run db:seed
@@ -51,7 +54,7 @@ npm run build
 npm start
 ```
 
-Do not overwrite an existing `.env`. The clean-install check uses the complete current submission candidate in an isolated temporary copy, with a separate Compose project/volume and available ports. See FINAL_REVIEW for the distinction between that check and a committed-checkout/GitHub handoff.
+Do not overwrite an existing `.env`. Add the new Redis variables from `.env.example` to an existing setup if you want caching; without REDIS_URL the catalog reads PostgreSQL directly. The clean-install check uses the complete current submission candidate in an isolated temporary copy, with a separate Compose project/volume and available ports. See FINAL_REVIEW for the distinction between that check and a committed-checkout/GitHub handoff.
 
 In another terminal:
 
@@ -90,6 +93,9 @@ Do not remove a development volume to repeat a demo. Choose a new future interva
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Local Compose credentials/database; keep aligned with DATABASE_URL                         |
 | `POSTGRES_PORT`                                     | Development PostgreSQL host port; example 55432                                            |
 | `TEST_DATABASE_URL`                                 | Dedicated test server/database; example port 55433, base database `service_scheduler_test` |
+| `REDIS_URL`                                         | Optional Redis URL; unset/empty disables both reference-list caches                        |
+| `CATALOG_CACHE_NAMESPACE`                           | Required with Redis; shared by replicas, distinct per deployment/database                  |
+| `TEST_REDIS_URL`                                    | Dedicated test Redis: `redis://127.0.0.1:56380`; fixtures own unique namespaces            |
 
 `.env` is ignored. Example credentials are disposable local values, not production secrets. Compose binds PostgreSQL to loopback. URL-encode special credential characters; changing `.env` credentials does not update an already initialized database volume. Runtime pools have ten connections and a five-second connection acquisition timeout. Booking acquisition waits at most one second or the remaining budget; Prisma transaction timeout uses the budget remaining at the start of each attempt.
 
@@ -97,12 +103,17 @@ Do not remove a development volume to repeat a demo. Choose a new future interva
 
 ## API contracts and examples
 
-| Route                                                | Success | Description                                                      |
-| ---------------------------------------------------- | ------- | ---------------------------------------------------------------- |
-| `POST /api/v1/appointments`                          | 201     | Confirm and assign both resources after commit                   |
-| `GET /api/v1/appointments/:id`                       | 200     | Retrieve all public association IDs, interval, status, createdAt |
-| `GET /api/v1/dealerships/:dealershipId/availability` | 200     | Read-only full-duration availability and counts                  |
-| `GET /health`                                        | 200     | Process liveness, not continuous database readiness              |
+| Route                                                | Success | Description                                                                 |
+| ---------------------------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `POST /api/v1/appointments`                          | 201     | Confirm and assign both resources after commit                              |
+| `GET /api/v1/appointments/:id`                       | 200     | Retrieve all public association IDs, interval, status, createdAt            |
+| `GET /api/v1/dealerships/:dealershipId/availability` | 200     | Read-only full-duration availability and counts                             |
+| `GET /api/v1/service-types`                          | 200     | Active global catalog for service selection; may be cached for five minutes |
+| `GET /api/v1/customers`                              | 200     | Paginated customer lookup                                                   |
+| `GET /api/v1/customers/:customerId/vehicles`         | 200     | Paginated owned vehicles, including VIN                                     |
+| `GET /api/v1/dealerships`                            | 200     | Paginated dealership lookup                                                 |
+| `GET /api/v1/customers/:customerId/appointments`     | 200     | Paginated customer appointment history                                      |
+| `GET /health`                                        | 200     | Process liveness, not continuous database readiness                         |
 
 Example POST payload using seeded customer 1 / vehicle 1 / dealership A / 30-minute oil change:
 
@@ -134,6 +145,103 @@ Errors use:
 
 400 = malformed input; 404 = missing reference; 422 = business validation; 409 = settled resource exhaustion or `IDEMPOTENCY_KEY_REUSED`; 503 = admission exhaustion, expired booking budget, unresolved contention, or recognized temporary database failure; 500 = unexpected failure. Availability uses the same safe temporary/unexpected error policy. Validation may add a details array. Business API responses include `x-request-id`; 503 adds `Retry-After: 1`. SQL, credentials, and stacks are not exposed.
 
+## Booking lookups and customer history
+
+These optional assessment extensions support fetching IDs in Swagger before booking:
+
+| GET endpoint                                 | Public item fields                         | Order                     |
+| -------------------------------------------- | ------------------------------------------ | ------------------------- |
+| `/api/v1/customers`                          | `id`, `name`                               | Name, ID ascending        |
+| `/api/v1/customers/:customerId/vehicles`     | `id`, `customerId`, `vin`, `make`, `model` | ID ascending              |
+| `/api/v1/dealerships`                        | `id`, `name`, `timeZone`                   | Name, ID ascending        |
+| `/api/v1/customers/:customerId/appointments` | Existing public appointment response       | Start time, ID descending |
+
+All four return `{ items, page, limit, hasNext }`. Defaults are `page=1&limit=20`; limit is 1–100. Pages must be positive integers with a supported database offset (at most 2,147,483,647). Unknown query fields, repeated parameters, malformed IDs, and invalid pagination return `400 VALIDATION_ERROR`. One extra row determines `hasNext`; no total-count query is issued. Known parents without results return an empty page; unknown customers return `404 CUSTOMER_NOT_FOUND`. Database failures retain the existing safe error contract.
+
+Customers can have multiple vehicles and appointments. History includes all stored statuses, past and future, and remains scoped to the requested customer. Offset pages can shift during concurrent inserts; they are not a frozen snapshot. Booking still accepts only its original five fields and assigns technician/bay automatically.
+
+Workflow: fetch customers → owned vehicles → dealerships → service types → availability → POST booking → customer appointment history. Copy IDs from GET responses into Swagger requests; there are no dynamic dropdowns. Service types and dealership pages use optional shared Redis cache-aside. Customer, vehicle, and appointment-history reads use PostgreSQL directly. The assessment has no authentication: production exposure of customer/vehicle/history data requires authorization.
+
+## Service catalog and Redis caching
+
+`GET /api/v1/service-types` returns active global services as `{ id, name, durationMinutes }[]`, sorted by name then ID. Empty results are `200 []`. Use it to populate a booking form rather than hardcoding fixture IDs. A listed service does not guarantee qualified/available resources at every dealership.
+
+The catalog uses cache-aside: Redis GET first; on a miss or invalid JSON/shape, query PostgreSQL and store the successful array with atomic `SET ... EX 300`. Empty arrays are cached; errors are not. Hits never extend TTL. Redis read failures fall back to PostgreSQL; Redis SET failure does not discard a successful database response. Database errors retain the existing safe error contract and are not swallowed by cache fallback. Booking, availability, appointment retrieval, and durable idempotency do not use this cache.
+
+Configure optional `REDIS_URL=redis://127.0.0.1:56379` and required-with-Redis `CATALOG_CACHE_NAMESPACE=service-scheduler:local`. Each deployment/database needs its own namespace; replicas for the same database share it. The key is `<namespace>:service-types:v1:active`. Unset or empty REDIS_URL disables caching. Redis connects in the background and is not an application-startup dependency. The single ioredis 6.0.0 connection per app instance uses a 1 s connection timeout, 100 ms command timeout, 1 s pending-reply socket timeout, disabled offline queuing/resending, zero request-level retries, and built-in reconnect backoff. The client disconnects on shutdown. `/health` remains process liveness.
+
+The local Redis 7.4.12-alpine services bind to loopback (56379 development, 56380 test), use a 64 MiB Redis maxmemory setting with allkeys-lru eviction (not a container/process memory cap), and disable persistence. They are disposable caches; PostgreSQL data/configuration is unchanged. No memory-cache tier, coalescing, distributed lock, Pub/Sub, or background refresh is included. Concurrent misses can perform duplicate inexpensive catalog reads.
+
+Five minutes is entry lifetime after population, not an immediate-consistency guarantee after an update. There is currently no service-type update API; the seed inserts missing rows and preserves edits. After controlled SQL changes or seeding, invalidate the exact catalog key, or use the explicit refresh example below to replace its complete value. Future application writers should call `ServiceCatalogCache.invalidate()` after database commit and log/retry failed invalidation operationally; `false` reports failure without undoing the commit. A reader can refill old data after deletion, so this simple policy remains eventually consistent. Booking always validates current PostgreSQL duration/status.
+
+Local demonstration using the example namespace:
+
+```sh
+npm run cache:up
+docker compose exec -T redis redis-cli DEL 'service-scheduler:local:service-types:v1:active'
+curl --fail http://localhost:3000/api/v1/service-types
+curl --fail http://localhost:3000/api/v1/service-types
+docker compose exec -T redis redis-cli TTL 'service-scheduler:local:service-types:v1:active'
+```
+
+With Redis configured and ready, the logs distinguish `reference_cache_miss` and `reference_cache_hit`; subsequent hits do not reset TTL. Other events identify bypass, invalid values, read/write failures, and failed invalidation without logging Redis URLs or cached data. You can stop **only the disposable local cache** with `docker compose stop redis` to demonstrate PostgreSQL fallback, then restart with `npm run cache:up`. Use your actual namespace in the DEL/TTL commands. No global FLUSHDB is needed.
+
+### Refreshing an existing catalog entry
+
+For the small, complete catalog, maintenance can replace the cached value directly after a database update commits. Rebuild the entire active list through the existing repository so filtering and ordering are preserved. This is a tested maintenance example; there is no catalog-update endpoint, production writer, or automatic synchronization feature.
+
+The isolated integration example uses the existing database/repository/cache instances:
+
+```ts
+await prisma.$transaction(async (tx) => {
+  await tx.serviceType.update({
+    where: { id: oilChangeId },
+    data: { durationMinutes: 45 },
+  });
+}); // Commit must finish before reading and refreshing the catalog.
+const services = await catalogRepository.findActiveServiceTypes();
+await serviceCatalogCache.set(services);
+```
+
+This replaces the same key with `SET ... EX 300`, without deleting it first. Explicit replacement starts a fresh five-minute TTL; normal GET hits do not extend it. If the database transaction rolls back, stop before the catalog read/cache write. The integration tests inspect Redis before the next GET and verify that another app instance serves the refreshed list without another catalog database read.
+
+Replacement is best effort: `set()` logs Redis failures or bypasses an unavailable client and returns no storage confirmation. The example verifies the actual Redis value and TTL; awaiting `set()` alone is not proof of a successful refresh. A database-read failure after commit also prevents refresh. PostgreSQL and Redis do not commit atomically together; failed refreshes or concurrent refreshes writing older snapshots can leave stale data until expiry or a later refresh. Neither this example nor invalidation provides immediate consistency. Booking still validates current PostgreSQL data.
+
+Use replacement for this small whole-list snapshot. Keep grouped invalidation for paginated dealership lists: changing a dealership name or list membership can affect ordering, several pages/page sizes, and `hasNext`. `invalidateDealerships()` clears those pages while preserving the service-catalog key. One logical invalidation may issue multiple SCAN/UNLINK commands and is not atomic across all batches. No cache patching or versioning system is added.
+
+### Dealership page caching
+
+Redis also caches `GET /api/v1/dealerships`. Customer lists, owned vehicles, appointment history/retrieval, availability, booking, and idempotency remain uncached. CatalogModule and DirectoryModule share one optional Redis connection per application instance; domain cache providers validate their public payloads. There is no global interceptor or generic repository/cache framework.
+
+The existing `CATALOG_CACHE_NAMESPACE` setting namespaces both caches. Keys are:
+
+- `<namespace>:service-types:v1:active`
+- `<namespace>:dealerships:v1:page:<page>:limit:<limit>`
+
+Validated numeric page/limit values form the dealership keys. Cached pages retain `{ items, page, limit, hasNext }` and must match the requested pagination/public fields; hasNext=true requires a full page. Invalid values are misses. Successful empty pages are cached; database errors are not. Every entry uses fixed `SET ... EX 300`, and hits do not extend expiry. Redis failures fall back to PostgreSQL; database failures retain the existing safe error contract.
+
+No reference-data write API exists. After controlled dealership changes/seeding, call `DirectoryCache.invalidateDealerships()` **after commit** to clear all dealership pages, across page numbers and limits. It returns false and logs on failure. It filters cursor-based SCAN results by the exact namespace/entity prefix and passes each batch of matching keys to one UNLINK command. The service-catalog key is preserved. SCAN traverses the Redis database incrementally; MATCH filters affected keys, and COUNT is a work hint rather than a strict batch-size limit. One logical invalidation may require several commands and is not atomic across batches. Concurrent stale refills remain possible, and invalidation cannot undo a committed database update.
+
+For manual maintenance, use the actual namespace and delete only matching dealership keys:
+
+```sh
+docker compose exec -T redis redis-cli --scan --pattern 'service-scheduler:local:dealerships:v1:*' |
+  while IFS= read -r key; do
+    docker compose exec -T redis redis-cli UNLINK "$key"
+  done
+```
+
+These maintenance scans run outside request handling. TTL and Redis maxmemory bound retained cache data; arbitrarily deep pagination should be revisited only if measurements justify it. The optional technician-list endpoint/cache has been removed; technician selection and qualification checks remain internal to scheduling. Any old roster-cache entries expire naturally without a cleanup operation. Tests establish query avoidance, not a latency or throughput gain.
+
+Real Redis tests require `TEST_REDIS_URL=redis://127.0.0.1:56380`. Add it to your existing `.env` or supply it for a run:
+
+```sh
+npm run db:test:up
+TEST_REDIS_URL=redis://127.0.0.1:56380 npm run test:all
+```
+
+Existing booking tests leave Redis unconfigured. Catalog integration tests use the dedicated Redis service and unique namespaces shared by their two app instances; cleanup deletes only keys in their owned namespace. A catalog hit replaces one small SELECT with a Redis GET; directory hits avoid their corresponding repository reads, which can involve multiple SQL statements for nested relations. Misses add Redis GET/SET work around those reads. The four-row seeded catalog does not establish a bottleneck, and no latency or throughput improvement is claimed. Verification demonstrates query avoidance and failure behavior; observed results are recorded in [FINAL_REVIEW](docs/FINAL_REVIEW.md).
+
 ## Booking idempotency
 
 `POST /api/v1/appointments` requires exactly one UUID v4 `Idempotency-Key`; GET routes do not. A new successful booking returns 201 with `Idempotency-Replayed: false`. Repeating the same key and normalized five-field payload returns 201 with the original saved body and `Idempotency-Replayed: true`, even after restart, changed availability, or the booked start time passing. Each HTTP attempt gets a fresh `x-request-id`. A different payload with a successfully used key returns `409 IDEMPOTENCY_KEY_REUSED`; missing/invalid/repeated headers return `400 VALIDATION_ERROR`.
@@ -152,14 +260,14 @@ npm run lint
 npm run format:check
 npm run test:unit
 npm run db:test:up
-npm run test:all
+TEST_REDIS_URL=redis://127.0.0.1:56380 npm run test:all
 npm run test:e2e
 npm run test:concurrency
 ```
 
 `npm test` runs unit, health HTTP, and a real-driver failed-startup regression without a running database. `test:all` adds PostgreSQL integration tests. Focused e2e/concurrency commands select subsets of that integration suite; do not add their counts together as additional coverage.
 
-Each integration file creates an owned UUID-named database on the dedicated test server, applies actual migrations, seeds, and fixed timeout configuration, and removes that database afterward. It never resets the developer database. The role needs CREATEDB. HTTP tests use the real AppModule/PrismaService; two app instances have independent ten-connection pools. An injected clock keeps tests independent of wall-clock dates.
+Each integration file creates an owned UUID-named database on the dedicated test server, applies actual migrations, seeds, and fixed timeout configuration, and removes that database afterward. It never resets the developer database. The role needs CREATEDB. HTTP tests use the real AppModule/PrismaService and one fixture-owned loopback listener per app, closed during fixture teardown; two app instances have independent ten-connection pools. An injected clock keeps tests independent of wall-clock dates.
 
 The concurrency suite requires exactly one 201 and nineteen 409 responses for twenty distinct customers competing for one pair; two competing requests with two pairs must both commit using distinct resources. Other cases cover technician/bay bottlenecks, adjacency, and bounded retry exhaustion. A test-only barrier forces real reads to race; direct SQL verifies final counts, relationships, qualifications, and zero resource overlaps. No sleeps or mocked database results prove concurrency safety.
 
@@ -191,6 +299,8 @@ The developer selected Scenario A, backend-only scope, NestJS/PostgreSQL/Prisma,
 | Documentation         | Produced design, evidence, and demo documents checked against code and executed commands                                                                      |
 
 An earlier review reproduced exclusion-related deadlock storms and temporarily used selected-resource row locks. The developer subsequently challenged the contention cost, approved conflict-aware insertion with bounded admission/deadlines/backoff, and moved fixed database timeouts out of individual transactions. That implementation is now in commit 40352a1; this Phase 5 merge preserves it. Real PostgreSQL tests verify direct exclusion failures, skipped-insert rollback, fresh allocation, timeout recovery, and the unchanged strict contention assertions. The Phase 5 stash also records a Swagger YAML dependency advisory; its scoped patched override is retained and current audit results are recorded in FINAL_REVIEW.
+
+The developer also selected read-only booking lookups and customer appointment history. AI helped implement bounded PostgreSQL reads and focused HTTP tests while preserving automatic assignment and the original booking contract.
 
 The developer subsequently selected durable idempotency for lost-response recovery. AI helped design atomic key claiming and response snapshots in the existing PostgreSQL transaction, with successful keys retained indefinitely. Key-claim waits are classified separately from allocation retries; replay precedes time/catalog validation. Verification is recorded in [IDEMPOTENCY](docs/IDEMPOTENCY.md), with historical load evidence kept separate.
 

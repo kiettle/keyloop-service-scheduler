@@ -4,6 +4,43 @@ import { validateEnvironment } from '../src/config/environment';
 const databaseUrl = 'postgresql://scheduler:example@localhost:55432/service_scheduler';
 
 describe('environment validation', () => {
+  it('accepts a Redis URL only with an explicit safe namespace', () => {
+    expect(
+      validateEnvironment({
+        DATABASE_URL: databaseUrl,
+        REDIS_URL: 'redis://localhost:56379',
+        CATALOG_CACHE_NAMESPACE: 'scheduler:local',
+      }),
+    ).toMatchObject({
+      REDIS_URL: 'redis://localhost:56379',
+      CATALOG_CACHE_NAMESPACE: 'scheduler:local',
+    });
+    expect(validateEnvironment({ DATABASE_URL: databaseUrl, REDIS_URL: '' })).not.toHaveProperty(
+      'REDIS_URL',
+    );
+  });
+
+  it.each([undefined, '', ' ', 'scheduler:*'])(
+    'rejects an invalid namespace %p when Redis is configured',
+    (CATALOG_CACHE_NAMESPACE) => {
+      expect(() =>
+        validateEnvironment({
+          DATABASE_URL: databaseUrl,
+          REDIS_URL: 'redis://localhost',
+          CATALOG_CACHE_NAMESPACE,
+        }),
+      ).toThrow('CATALOG_CACHE_NAMESPACE');
+    },
+  );
+
+  it.each(['http://user:secret@localhost', 'redis://', 'bad', true])(
+    'rejects invalid Redis configuration without leaking credentials',
+    (REDIS_URL) => {
+      expect(() => validateEnvironment({ DATABASE_URL: databaseUrl, REDIS_URL })).toThrow(
+        'REDIS_URL must be a Redis URL with a host.',
+      );
+    },
+  );
   it('provides development defaults with an explicit database URL', () => {
     expect(validateEnvironment({ DATABASE_URL: databaseUrl })).toEqual({
       NODE_ENV: 'development',

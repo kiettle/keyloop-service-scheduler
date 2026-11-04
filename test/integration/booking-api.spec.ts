@@ -1,3 +1,4 @@
+import { Server } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
@@ -55,6 +56,25 @@ describe('booking API with migrated PostgreSQL', () => {
     return result;
   }
 
+  it('keeps the fixture listener bound to the same loopback port across HTTP requests', async () => {
+    const server = application.app.getHttpServer() as Server;
+    const address = server.address();
+    expect(address).toMatchObject({ address: '127.0.0.1' });
+    await application.http.get('/health').expect(200);
+    expect(server.listening).toBe(true);
+    expect(server.address()).toEqual(address);
+    await application.http.get('/api/v1/appointments/invalid').expect(400);
+    expect(server.listening).toBe(true);
+    expect(server.address()).toEqual(address);
+  });
+
+  it('returns route-not-found for the removed technician list', async () => {
+    const response = await application.http
+      .get(`/api/v1/dealerships/${id.dealershipA}/technicians`)
+      .expect(404);
+    expect((response.body as ErrorJson).error.code).toBe('NOT_FOUND');
+  });
+
   it('serves the Swagger UI and local initialization script', async () => {
     const html = await application.http.get('/docs/').expect(200).expect('Content-Type', /html/);
     expect(html.text).toContain('Keyloop API documentation');
@@ -62,12 +82,17 @@ describe('booking API with migrated PostgreSQL', () => {
     await application.http.get('/docs/swagger-ui-init.js').expect(200);
   });
 
-  it('documents exactly the accepted booking fields and unchanged API routes', async () => {
+  it('documents exactly the accepted booking fields and approved API routes', async () => {
     const document = await apiDocument();
     expect(Object.keys(document.paths).toSorted()).toEqual([
       '/api/v1/appointments',
       '/api/v1/appointments/{id}',
+      '/api/v1/customers',
+      '/api/v1/customers/{customerId}/appointments',
+      '/api/v1/customers/{customerId}/vehicles',
+      '/api/v1/dealerships',
       '/api/v1/dealerships/{dealershipId}/availability',
+      '/api/v1/service-types',
       '/health',
     ]);
     const booking = schema(document, 'CreateAppointmentDto');

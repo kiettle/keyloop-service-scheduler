@@ -42,7 +42,6 @@ describe('durable booking idempotency across app instances', () => {
   beforeAll(async () => {
     database = await createTestDatabase();
     apps = await Promise.all([createBookingApp(database.url), createBookingApp(database.url)]);
-    await Promise.all(apps.map((app) => app.app.listen(0, '127.0.0.1')));
   });
   beforeEach(async () => {
     await resetBookingFixtures(database.prisma);
@@ -377,7 +376,6 @@ describe('durable booking idempotency across app instances', () => {
     }
     await apps[0].close();
     apps[0] = await createBookingApp(database.url);
-    await apps[0].app.listen(0, '127.0.0.1');
     const recovered = await post(key).expect(201);
     expect(recovered.headers['idempotency-replayed']).toBe('true');
     const saved = await database.prisma.appointmentBookingRequest.findUniqueOrThrow({

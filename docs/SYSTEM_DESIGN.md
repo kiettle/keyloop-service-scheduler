@@ -20,7 +20,7 @@ Correct resource exclusivity across app instances, atomic writes, understandable
 - Only CONFIRMED blocks resources. Intervals are half-open `[startAt, endAt)`; adjacency is permitted.
 - Starts must be future instants with an explicit offset. Input uses seconds and at most three fractional digits; comparisons use absolute timestamps.
 - Reference data is seeded, with no concurrent administrative API. Existing appointments retain their stored intervals after catalog changes.
-- Durable idempotency is the approved P1 addition: POST requires a UUID v4 key; successful keys replay indefinitely.
+- Durable idempotency is the approved P1 addition: POST requires a UUID v4 key; successful keys replay indefinitely. Shared Redis caching is approved for service types and dealership pages.
 - No cancellation/rescheduling API, vehicle-overlap exclusion, hours/shifts, authentication, frontend, or notifications.
 
 ## 5. Architecture
@@ -33,16 +33,25 @@ flowchart TB
     Bookings["AppointmentsModule: idempotent booking and retrieval"]
     Scheduling["SchedulingModule: availability and resource selection"]
     Health["HealthModule: process liveness"]
+    Catalog["CatalogModule: service selection"]
+    Cache["RedisCacheModule: shared optional Redis client"]
     Prisma["DatabaseModule: PrismaService / pool of 10"]
     HTTP --> Bookings
     HTTP --> Scheduling
     HTTP --> Health
+    HTTP --> Catalog
+    Catalog --> Prisma
+    Catalog --> Cache
+    HTTP --> Directory["DirectoryModule: booking lookups"]
+    Directory --> Prisma
+    Directory --> Cache
     Bookings -->|shared availability| Scheduling
     Bookings --> Prisma
     Scheduling --> Prisma
   end
   Client --> HTTP
   Prisma --> PG[("PostgreSQL 17.6")]
+  Cache --> Redis[("Redis: reference lists")]
 ```
 
 ## 6. Component responsibilities
@@ -208,16 +217,19 @@ The additive booking-request table has a UUID primary key, SHA-256 fingerprint, 
 | `POST /api/v1/appointments`                          | 201     | Five input fields and required UUID v4 key header; assigned resource IDs, derived interval, CONFIRMED status, createdAt |
 | `GET /api/v1/appointments/:id`                       | 200     | Persisted public appointment fields and relationship IDs                                                                |
 | `GET /api/v1/dealerships/:dealershipId/availability` | 200     | Service/time query; interval, counts, boolean; no write                                                                 |
+| `GET /api/v1/service-types`                          | 200     | Active global service-selection list with optional Redis cache                                                          |
 | `GET /health`                                        | 200     | `{ "status": "ok" }`                                                                                                    |
 | `GET /docs`, `GET /docs-json`                        | 200     | Swagger UI and generated OpenAPI contract                                                                               |
 
-Swagger uses explicit DTO/controller metadata through a shared setup function in production and HTTP tests. No compiler plugin or business API change was introduced. The [demo guide](DEMO_GUIDE.md) provides executable requests.
+Booking lookups use one small directory module (controller, service, concrete repository). Customer history stays in the appointments module and reuses its public selection/serializer. A shared pagination DTO and small result helper bound reads; nested relation selections keep vehicle/history reads bounded. DirectoryCache serves dealership pages through the shared RedisCacheModule; customer, vehicle, and history reads remain direct database reads. These endpoints add no booking transaction work. See [lookup contracts](../README.md#booking-lookups-and-customer-history) for all four lookup/history routes, pagination, ordering, parent errors, and authorization limitations.
+
+Swagger uses explicit DTO/controller metadata through a shared setup function in production and HTTP tests. No compiler plugin is needed. The [demo guide](DEMO_GUIDE.md) provides executable requests.
 
 ## 13. Technologies and trade-offs
 
 NestJS provides modules, DI, validation, filters, and test support; TypeScript keeps contracts explicit. PostgreSQL provides transactional relational integrity and range exclusions across app instances. Prisma provides typed queries, with reviewed SQL for unsupported constraints. Vitest/SWC preserve Nest constructor metadata. Docker Compose supports reproducible local databases. Exact versions and the lockfile make upgrades deliberate; `npm ci` reproduces the resolved dependency graph.
 
-An in-memory mutex or availability read alone cannot protect multiple instances. SERIALIZABLE isolation still requires conflict handling; global dealership/resource-row locks serialize unrelated intervals. Conflict-aware insertion with independent exclusions directly enforces resource exclusivity. The in-memory admission gate protects local capacity, while PostgreSQL protects correctness across instances. Stable ID ordering is easy to review but does not optimize fairness. No cache or additional service is justified without measurements.
+An in-memory mutex or availability read alone cannot protect multiple instances. SERIALIZABLE isolation still requires conflict handling; global dealership/resource-row locks serialize unrelated intervals. Conflict-aware insertion with independent exclusions directly enforces resource exclusivity. The in-memory admission gate protects local capacity, while PostgreSQL protects correctness across instances. Stable ID ordering is easy to review but does not optimize fairness. The approved optional Redis cache serves service types and dealership pages. It demonstrates shared cache-aside behavior; no measured bottleneck or capacity improvement is claimed.
 
 ## 14. Reliability and errors
 
@@ -254,3 +266,19 @@ The developer selected Scenario A, backend scope, stack, Vitest, phased approval
 Real corrections include startup connectivity/metadata issues, Prisma error-shape assumptions, a race test that assumed only exclusion errors, temporary resource locking followed by approved conflict-aware insertion, and moving fixed timeouts out of each transaction. This merge resolved an older Phase 5 stash against commit 40352a1, preserving the current business implementation while restoring Swagger and submission documents. [README](../README.md#ai-collaboration-narrative) summarizes all stages; historical phase notes, LOAD_RESULTS, and [FINAL_REVIEW](FINAL_REVIEW.md) distinguish observed results from assumptions. The video remains a manual deliverable.
 
 The subsequent approved idempotency addition uses a ninth model and an additive migration, preserving the booking/exclusion algorithm. The developer chose required booking keys, successful-response-only storage, indefinite retention, and bounded waiting for duplicates. The design explicitly handles replay after time/catalog changes and separates key waiting from allocation retries. Executed evidence is recorded in [IDEMPOTENCY](IDEMPOTENCY.md).
+
+## 21. Service-selection catalog cache
+
+CatalogModule follows the existing thin-controller/use-case/concrete-repository pattern. GET /api/v1/service-types returns only id, name, and durationMinutes for active global service types, ordered by name then ID. The use case checks ServiceCatalogCache, reads CatalogRepository on a miss, then best-effort caches the successful array. Empty arrays are valid hits; malformed values are misses. Redis catches never wrap the database read, so PostgreSQL failures retain their existing classification.
+
+Redis is optional, with one shared background connection per instance, built-in timeout/reconnect controls, no offline command queue/resends, and clean disconnect. A configured URL requires a deployment/database namespace; replicas share the same versioned catalog key and a five-minute TTL. No global HTTP cache or additional memory tier is used. Booking and availability continue through the unchanged SchedulingRepository and current database data. Idempotency remains entirely PostgreSQL-backed.
+
+No service-update API exists. The catalog cache exposes invalidate(), and README documents exact-key DEL after seeding/manual changes. Future writers invalidate after commit; expiry and deletion are eventually consistent because concurrent readers can refill old data. Five minutes is cache-entry lifetime, not strict freshness measured from an update. A stale displayed duration/status cannot authorize a booking. The four-row catalog is not a demonstrated bottleneck; test evidence shows query avoidance and failure isolation, not throughput improvement. See [README caching guidance](../README.md#service-catalog-and-redis-caching).
+
+## Reference-list cache extension
+
+The user retained dealership page caching alongside the service catalog and removed the optional technician-list endpoint/cache to keep the public API focused on booking inputs. CatalogModule and DirectoryModule import the same RedisCacheModule, so Nest creates one RedisCache connection provider per application instance. That provider owns JSON parsing, short timeouts, GET/SET, exact deletion, prefix-filtered SCAN/UNLINK invalidation, and safe error logs. SCAN traverses the Redis database incrementally; MATCH limits which keys are deleted, and COUNT is a work hint rather than a strict batch-size limit. One invalidation can issue multiple commands and is not atomic across batches. ServiceCatalogCache and DirectoryCache own public-payload validation and domain keys; database reads stay outside Redis catches.
+
+Directory keys include normalized page/limit. Fixed five-minute expiry, malformed-value fallback, cached empty results, and PostgreSQL error classification match the catalog policy. Controlled writers invalidate after commit; each list invalidator removes all matching pages. There is no administrative update API or background invalidation worker. Manual changes can leave displayed dealership data stale; concurrent stale refill is possible. Booking/availability use current database resources; there is no technician-roster cache. Customer/vehicle/history endpoints are uncached. The existing namespace setting is retained for compatibility. See [complete cache keys and maintenance guidance](../README.md#dealership-page-caching).
+
+Catalog maintenance can also reread the complete active list after a committed update and replace the existing key through ServiceCatalogCache.set(). Replacement renews its five-minute TTL; GET hits do not. The isolated refresh/rollback tests demonstrate this pattern without a production writer or update API. set() returns no storage confirmation, and failed or overlapping refreshes can leave stale snapshots. See the [catalog refresh example](../README.md#refreshing-an-existing-catalog-entry). Cache page validation rejects inconsistent pagination such as an undersized page claiming hasNext=true.

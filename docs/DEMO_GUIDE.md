@@ -4,13 +4,14 @@ Use the local assessment setup. No video has been recorded by the agent. Complet
 
 ## 1. Start the application
 
-On a new checkout, follow [README](../README.md#first-installation). Preserve an existing `.env`.
+On a new checkout, follow [README](../README.md#first-installation). Preserve an existing `.env`. For the cache demonstration, add `REDIS_URL` and `CATALOG_CACHE_NAMESPACE` from `.env.example` before starting the app; otherwise both cached lists correctly read PostgreSQL directly.
 
 ```sh
 cp .env.example .env
 npm ci
 npm run prisma:generate
 npm run db:up
+npm run cache:up
 npm run prisma:validate
 npm run db:migrate
 npm run db:seed
@@ -31,7 +32,54 @@ curl --fail --silent --show-error --output /dev/null "$BASE_URL/docs/"
 curl --fail --silent --show-error --output /dev/null "$BASE_URL/docs-json"
 ```
 
-Expect health JSON `{ "status": "ok" }` and successful documentation responses. Open `$BASE_URL/docs` in the browser: Appointments, Availability, and Health are documented. Explain the required UUID v4 Idempotency-Key header, five POST fields, server-derived assignments/duration, and status/error schemas. View the UI before issuing the cURL demo; executing additional POSTs in Swagger at the same interval would consume resources.
+Expect health JSON `{ "status": "ok" }` and successful documentation responses. Open `$BASE_URL/docs` in the browser: Appointments, Booking lookups, Availability, Service catalog, and Health are documented. Explain the required UUID v4 Idempotency-Key header, five POST fields, server-derived assignments/duration, and status/error schemas. View the UI before issuing the cURL demo; executing additional POSTs in Swagger at the same interval would consume resources.
+
+Fetch the booking reference IDs in Swagger or with these reads (replace the example IDs with returned IDs):
+
+```bash
+curl --fail --silent --show-error "$BASE_URL/api/v1/customers?limit=20"
+curl --fail --silent --show-error "$BASE_URL/api/v1/customers/20000000-0000-4000-8000-000000000001/vehicles"
+curl --fail --silent --show-error "$BASE_URL/api/v1/dealerships"
+curl --fail --silent --show-error "$BASE_URL/api/v1/customers/20000000-0000-4000-8000-000000000001/appointments?page=1&limit=20"
+```
+
+Copy the customer, owned vehicle, dealership, and service-type IDs into the five-field booking body. VIN distinguishes vehicles. Repeat the history GET after booking to show the persisted result; the new appointment appears according to start-time descending order. Lists use `{ items, page, limit, hasNext }`; the service catalog keeps its existing array response. Reference IDs below remain a deterministic seeded demo shortcut. Customer reads are an unauthenticated assessment extension.
+
+Before selecting a service, demonstrate the shared catalog cache using the configured namespace (the example is service-scheduler:local):
+
+```sh
+docker compose exec -T redis redis-cli DEL 'service-scheduler:local:service-types:v1:active'
+curl --fail --silent --show-error "$BASE_URL/api/v1/service-types"
+curl --fail --silent --show-error "$BASE_URL/api/v1/service-types"
+docker compose exec -T redis redis-cli TTL 'service-scheduler:local:service-types:v1:active'
+```
+
+Expect the active service list; after Redis is ready the first request misses, the second hits, and TTL remains at most 300 seconds. Show cache events in application logs. After controlled catalog changes/seeding, delete the same key. To demonstrate fallback, stop only the disposable local Redis service with docker compose stop redis, repeat the GET, and restart with npm run cache:up. The catalog still reads PostgreSQL. Use a new booking key for booking demonstrations; cached catalog data is never authoritative for validation. See [README](../README.md#service-catalog-and-redis-caching) for configuration and limitations.
+
+To show dealership page caching, request the same page twice:
+
+```sh
+curl --fail --silent --show-error "$BASE_URL/api/v1/dealerships?page=1&limit=20"
+curl --fail --silent --show-error "$BASE_URL/api/v1/dealerships?page=1&limit=20"
+docker compose exec -T redis redis-cli TTL 'service-scheduler:local:dealerships:v1:page:1:limit:20'
+```
+
+Use `reference_cache_miss` / `reference_cache_hit` logs and the real integration tests to explain query avoidance. Earlier lookup requests may already have populated these entries. Changing page/limit uses a separate key. Stop the disposable Redis service and repeat the dealership read to demonstrate database fallback, then restart it. Explain that displayed dealership data may be stale while booking still checks current resources. Show [targeted invalidation](../README.md#dealership-page-caching) after controlled changes; do not mutate demo data solely to demonstrate this during the video. No measured latency benefit is claimed.
+
+To demonstrate replacement versus grouped invalidation, run the focused examples on the isolated test services:
+
+```sh
+npm run db:test:up
+TEST_REDIS_URL=redis://127.0.0.1:56380 npm run test:integration -- \
+  test/integration/service-catalog.spec.ts test/integration/directory-cache.spec.ts \
+  -t 'refreshes the existing catalog|catalog update rolls back|invalidates all dealership pages'
+```
+
+Show the catalog refresh test: warm the original key, shorten its TTL, commit Oil Change from 30 to 45 minutes, read the full ordered active catalog, and replace the same key. Redis contains the new snapshot before the second instance's GET, expiry resets to about 300 seconds, and that GET performs no catalog database read or TTL extension. Show the rollback example leaving the database/cache unchanged and skipping refresh. These tests own temporary databases/namespaces and do not modify the live demo data.
+
+Then show the existing grouped-invalidation tests: one operation removes several cached dealership pages/page sizes while preserving the service-catalog key. SCAN/UNLINK can require several batches; this is not atomic across the entire group. SCAN traverses the Redis database incrementally, MATCH selects the affected keys, and COUNT is a work hint rather than a strict batch-size limit. Renaming a dealership or changing list membership can move items between pages, so invalidation is simpler than patching every cached page.
+
+Explain the boundary: this is a tested maintenance pattern using existing methods, with no update/refresh API or automatic writer. Refresh happens after commit and replaces the whole catalog; it is best effort, and awaiting set() does not confirm storage. A refresh can fail or overwrite a newer snapshot during concurrent updates. PostgreSQL/Redis are not atomically coordinated. Read [the refresh example and limitations](../README.md#refreshing-an-existing-catalog-entry); booking correctness still comes from PostgreSQL.
 
 ## 3. Generate a future interval and check availability
 
@@ -133,13 +181,13 @@ Expect a second 201 with technician A3 / bay A2, then 409 NO_AVAILABILITY with a
 
 ## 6. Demonstrate actual concurrent protection and tests
 
-In the project terminal, ensure TEST_DATABASE_URL from `.env.example` exists in `.env`, then:
+In the project terminal, ensure both TEST_DATABASE_URL and TEST_REDIS_URL from `.env.example` exist in `.env`, then:
 
 ```sh
 npm run db:test:up
 npm run test:concurrency
 npm run test:e2e
-npm run test:all
+TEST_REDIS_URL=redis://127.0.0.1:56380 npm run test:all
 ```
 
 These tests own separate fresh databases; they do not clear the two demo bookings.
@@ -157,14 +205,14 @@ Show source for the two named exclusions, the conflict-aware insert, and the bou
 
 ## 7. Video outline — approximately 8–9 minutes
 
-| Time      | Content                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------- |
-| 0:00–0:45 | Introduce yourself, Scenario A, and backend-only scope                                                  |
-| 0:45–2:00 | Architecture/ER diagrams, modules, qualifications and durations                                         |
-| 2:00–3:30 | Half-open ranges, both exclusions, conflict-aware insertion, transaction commit and fresh retries       |
-| 3:30–6:00 | Swagger, availability, create/retrieve, alternative pair and 409; show concurrency assertions/results   |
-| 6:00–7:30 | AI collaboration: developer direction, real error probes, review findings, verification and corrections |
-| 7:30–8:30 | Trade-offs, limitations, what you learned, and remaining production work                                |
+| Time      | Content                                                                                                              |
+| --------- | -------------------------------------------------------------------------------------------------------------------- |
+| 0:00–0:45 | Introduce yourself, Scenario A, and backend-only scope                                                               |
+| 0:45–2:00 | Architecture/ER diagrams, modules, qualifications and durations                                                      |
+| 2:00–3:30 | Half-open ranges, both exclusions, conflict-aware insertion, transaction commit and fresh retries                    |
+| 3:30–6:00 | Swagger lookups, availability, booking/replay/mismatch, history; catalog miss/hit/fallback; show concurrency results |
+| 6:00–7:30 | AI collaboration: developer direction, real error probes, review findings, verification and corrections              |
+| 7:30–8:30 | Trade-offs, limitations, what you learned, and remaining production work                                             |
 
 Use genuine examples: startup connectivity validation, Prisma SQLSTATE metadata, a test that incorrectly assumed only exclusion errors, and the progression from temporary resource locks to approved conflict-aware insertion and fixed database timeouts. State what you personally decided and can explain. Do not present proposed telemetry, authentication, production throughput, or a recorded video as implemented.
 

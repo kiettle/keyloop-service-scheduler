@@ -42,7 +42,6 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
   beforeAll(async () => {
     database = await createTestDatabase();
     application = await createBookingApp(database.url);
-    await application.app.listen(0, '127.0.0.1');
     repository = application.app.get(AppointmentRepository);
     capacity = application.app.get(BookingCapacity);
   });

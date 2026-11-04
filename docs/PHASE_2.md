@@ -20,7 +20,7 @@ See [DATABASE.md](DATABASE.md) for the complete enforcement/limitation table, fi
 - `prisma/migrations/20261102000000_initial_domain/migration.sql` and `migration_lock.toml`: reproducible tables, foreign keys, CHECKs, btree_gist, and two `[)` partial GiST exclusions, wrapped in a transaction.
 - `prisma/seed-data.ts`, `prisma/seed.ts`, `prisma.config.ts`: transactional insert-missing reference fixtures, stable IDs, and actual Prisma seed command.
 - `test/helpers/test-database.ts`, `test/integration/database.spec.ts`, `vitest.integration.config.mts`: separate clean-database integration lane and real SQL assertions.
-- `compose.yaml`, `.env.example`: separate test service/connection configuration.
+- `docker-compose.yaml` (named `compose.yaml` during this phase), `.env.example`: separate test service/connection configuration.
 - `package.json`, `vitest.config.mts`, `tsconfig.json`, `eslint.config.mjs`: commands, lane isolation, and checking/linting of seed code.
 - `README.md`, `docs/DATABASE.md`, this record, `AGENTS.md`: setup, evidence, limitations, and phase authorization. The assessment spec and Phase 1 application source were not modified.
 
