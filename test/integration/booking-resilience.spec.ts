@@ -10,6 +10,7 @@ import { BookingCapacity } from '../../src/appointments/booking-capacity';
 import { BookingConflict, DatabaseUnavailable } from '../../src/appointments/booking.error';
 import { postgresState } from '../../src/appointments/database-error';
 import { validateEnvironment } from '../../src/config/environment';
+import { DATABASE_POOL_MAX } from '../../src/database/prisma.service';
 import { createTestDatabase } from '../helpers/test-database';
 import {
   at,
@@ -352,11 +353,11 @@ describe('booking limits and conflict-aware persistence with PostgreSQL', () => 
     const full = deferred(),
       release = deferred();
     let acquired = 0;
-    const holders = Array.from({ length: 10 }, () =>
+    const holders = Array.from({ length: DATABASE_POOL_MAX }, () =>
       application.prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`SELECT 1`;
-          if (++acquired === 10) full.resolve();
+          if (++acquired === DATABASE_POOL_MAX) full.resolve();
           await release.promise;
         },
         { timeout: 10000 },

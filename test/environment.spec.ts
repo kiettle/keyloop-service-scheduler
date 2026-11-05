@@ -47,17 +47,17 @@ describe('environment validation', () => {
       PORT: 3000,
       DATABASE_URL: databaseUrl,
       BOOKING_MAX_ATTEMPTS: 4,
-      BOOKING_MAX_CONCURRENT: 8,
-      BOOKING_MAX_PENDING: 128,
+      BOOKING_MAX_CONCURRENT: 16,
+      BOOKING_MAX_PENDING: 1024,
       BOOKING_TIMEOUT_MS: 5000,
     });
   });
 
   it.each([
     ['BOOKING_MAX_CONCURRENT', '0'],
-    ['BOOKING_MAX_CONCURRENT', '9'],
+    ['BOOKING_MAX_CONCURRENT', '17'],
     ['BOOKING_MAX_PENDING', '-1'],
-    ['BOOKING_MAX_PENDING', '1001'],
+    ['BOOKING_MAX_PENDING', '1025'],
     ['BOOKING_TIMEOUT_MS', '99'],
     ['BOOKING_TIMEOUT_MS', '30001'],
     ['BOOKING_MAX_CONCURRENT', true],

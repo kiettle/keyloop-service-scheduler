@@ -238,6 +238,27 @@ describe('booking orchestration', () => {
     });
     await expect(useCase.execute(input, key)).rejects.toThrow('Commit failed');
   });
+
+  it('returns a committed success even when transaction completion arrives after the deadline', async () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    repository.transaction.mockImplementationOnce(async (operation) => {
+      const result = await operation({} as Prisma.TransactionClient);
+      // Model successful commit completion after the five-second budget, without sleeping.
+      now.mockReturnValue(6001);
+      return result;
+    });
+
+    await expect(useCase.execute(input, key)).resolves.toEqual({
+      appointment: serializeAppointment(persisted),
+      replayed: false,
+    });
+    expect(repository.transaction).toHaveBeenCalledTimes(1);
+    expect(repository.create).toHaveBeenCalledTimes(1);
+    expect(requests.complete).toHaveBeenCalledTimes(1);
+    expect(delay).not.toHaveBeenCalled();
+    expect(module.get(BookingCapacity).counts).toEqual({ active: 0, pending: 0 });
+  });
+
   it('backs off only after a failed transaction has finished rollback', async () => {
     let activeTransaction = false;
     repository.transaction.mockImplementationOnce(async (operation) => {

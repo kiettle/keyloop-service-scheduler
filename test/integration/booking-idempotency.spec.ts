@@ -7,7 +7,7 @@ import { Prisma } from '@prisma/client';
 import { fixtureIds as id } from '../../prisma/seed-data';
 import { AppointmentRepository } from '../../src/appointments/appointment.repository';
 import { BookingRequestRepository } from '../../src/appointments/booking-request.repository';
-import { bookingFingerprint } from '../../src/appointments/booking-idempotency';
+import { BookingKeyBusy, bookingFingerprint } from '../../src/appointments/booking-idempotency';
 import { BookingCapacity } from '../../src/appointments/booking-capacity';
 import { Clock } from '../../src/common/time/clock';
 import { postgresState } from '../../src/appointments/database-error';
@@ -48,7 +48,7 @@ describe('durable booking idempotency across app instances', () => {
     for (const app of apps) {
       app.app.get(ConfigService).set('BOOKING_TIMEOUT_MS', 5000);
       app.app.get(ConfigService).set('BOOKING_MAX_ATTEMPTS', 4);
-      app.app.get(ConfigService).set('BOOKING_MAX_CONCURRENT', 8);
+      app.app.get(ConfigService).set('BOOKING_MAX_CONCURRENT', 16);
     }
   });
   afterEach(() => {
@@ -383,6 +383,76 @@ describe('durable booking idempotency across app instances', () => {
     });
     expect(recovered.body).toEqual(saved.responseBody);
     await assertState(1);
+  });
+
+  it('replays within the same HTTP request after a real key-lock timeout and owner commit', async () => {
+    const key = randomUUID(),
+      claimed = deferred(),
+      release = deferred();
+    const ownerRequests = apps[0].app.get(BookingRequestRepository);
+    const ownerClaim = ownerRequests.claim.bind(ownerRequests);
+    vi.spyOn(ownerRequests, 'claim').mockImplementationOnce(async (...args) => {
+      const result = await ownerClaim(...args);
+      claimed.resolve();
+      await release.promise;
+      return result;
+    });
+
+    // A key wait must preserve the one allowed allocation attempt and original deadline.
+    apps[1].app.get(ConfigService).set('BOOKING_MAX_ATTEMPTS', 1);
+    const waitingRequests = apps[1].app.get(BookingRequestRepository);
+    const waitingClaim = waitingRequests.claim.bind(waitingRequests);
+    const transactionIds: string[] = [];
+    const keyTimeouts: BookingKeyBusy[] = [];
+    vi.spyOn(waitingRequests, 'claim').mockImplementation(async (...args) => {
+      const [identity] = await args[2].$queryRaw<Array<{ id: string }>>`
+        SELECT txid_current()::text AS id
+      `;
+      transactionIds.push(identity.id);
+      try {
+        return await waitingClaim(...args);
+      } catch (error) {
+        if (error instanceof BookingKeyBusy) {
+          keyTimeouts.push(error);
+          // Release only after PostgreSQL actually times out the waiting claim INSERT.
+          release.resolve();
+        }
+        throw error;
+      }
+    });
+    const repository = apps[1].app.get(AppointmentRepository);
+    const transactions = vi.spyOn(repository, 'transaction');
+    const allocation = vi.spyOn(repository, 'create');
+    const owner = post(key).then((response) => response);
+    try {
+      await Promise.race([
+        claimed.promise,
+        owner.then(() => {
+          throw new Error('Owner completed before the key-claim barrier.');
+        }),
+      ]);
+      // This single waiting HTTP request must retry internally and return the saved success.
+      const replay = await post(key, bookingInput, apps[1]).expect(201);
+      const created = await owner;
+      expect(created.status).toBe(201);
+      expect(created.headers['idempotency-replayed']).toBe('false');
+      expect(replay.headers['idempotency-replayed']).toBe('true');
+      expect(replay.body).toEqual(created.body);
+      expect(replay.text).toBe(created.text);
+      expect(keyTimeouts.length).toBeGreaterThanOrEqual(1);
+      expect(transactionIds.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(transactionIds).size).toBe(transactionIds.length);
+      const deadlines = transactions.mock.calls.map(([, deadline]) => deadline);
+      expect(deadlines).toHaveLength(transactionIds.length);
+      expect(deadlines[0]).toEqual(expect.any(Number));
+      expect(new Set(deadlines).size).toBe(1);
+      expect(allocation).not.toHaveBeenCalled();
+      expect(apps[1].app.get(BookingCapacity).counts).toEqual({ active: 0, pending: 0 });
+      await assertState(1);
+    } finally {
+      release.resolve();
+      await owner;
+    }
   });
 
   it('bounds real unique-key lock waits and can recover after owner rollback', async () => {

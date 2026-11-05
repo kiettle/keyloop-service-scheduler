@@ -6,7 +6,7 @@ const queryInteger = ({ value }: { value: unknown }) =>
   typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : Number.NaN;
 
 export class PaginationQueryDto {
-  @ApiPropertyOptional({ default: 1, minimum: 1, maximum: 2147483647 })
+  @ApiPropertyOptional({ type: 'integer', default: 1, minimum: 1, maximum: 2147483647 })
   @Transform(queryInteger)
   @IsInt()
   @Min(1)
@@ -25,7 +25,7 @@ export class PaginationQueryDto {
   })
   page = 1;
 
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ type: 'integer', default: 20, minimum: 1, maximum: 100 })
   @Transform(queryInteger)
   @IsInt()
   @Min(1)
@@ -34,9 +34,14 @@ export class PaginationQueryDto {
 }
 
 export class PageMetadataDto {
-  @ApiProperty() page!: number;
-  @ApiProperty() limit!: number;
-  @ApiProperty() hasNext!: boolean;
+  @ApiProperty({ type: 'integer', minimum: 1, example: 1, description: 'Current page number.' })
+  page!: number;
+
+  @ApiProperty({ type: 'integer', minimum: 1, maximum: 100, example: 20 })
+  limit!: number;
+
+  @ApiProperty({ example: false, description: 'Whether another page contains results.' })
+  hasNext!: boolean;
 }
 
 export function paginationWindow({ page, limit }: PaginationQueryDto) {

@@ -27,6 +27,7 @@ export class AppointmentsController {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: true,
+    example: 'c2ea7f26-2687-46ad-bdf1-7ab632f420cb',
     schema: {
       type: 'string',
       format: 'uuid',
@@ -34,7 +35,7 @@ export class AppointmentsController {
         '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
     },
     description:
-      'One UUID v4 per booking intent. Reuse it for retries; successful results are retained indefinitely.',
+      'One UUID v4 per booking intent. The example key is for the seeded demo body; repeating it replays the saved booking. Use a new key for a different intent. Reuse it for retries; successful results are retained indefinitely.',
   })
   @ApiOperation({
     summary: 'Confirm an appointment',

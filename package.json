@@ -13,6 +13,7 @@
     "build": "npm run prisma:generate && tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "start:dev": "node --watch --require ts-node/register src/main.ts",
+    "setup:local": "docker compose up -d --wait postgres redis && npm run build && npm run db:migrate && npm run db:seed && npm run db:configure",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"{src,test,prisma}/**/*.ts\"",
     "format": "prettier --write .",
@@ -28,12 +29,14 @@
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "prisma db seed",
+    "demo:reset": "ts-node prisma/reset-demo.ts",
     "db:test:up": "docker compose --profile test up -d --wait postgres-test redis-test",
     "test:integration": "vitest run --config vitest.integration.config.mts",
     "test:e2e": "vitest run --config vitest.integration.config.mts test/integration/booking-api.spec.ts",
     "test:concurrency": "vitest run --config vitest.integration.config.mts test/integration/booking-concurrency.spec.ts",
     "test:all": "npm test && npm run test:integration",
     "test:load": "ts-node test/load/run-bookings.ts",
+    "test:capacity": "npm run test:load -- --mode rate --rate 1000 --duration 300 --instances 2 --vus 3000 --workload spread",
     "cache:up": "docker compose up -d --wait redis"
   },
   "dependencies": {

@@ -103,6 +103,22 @@ describe('migrated PostgreSQL domain', () => {
     }
   });
 
+  it('retains history, resource and exclusion indexes after index cleanup', async () => {
+    const indexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'appointments'
+      ORDER BY indexname
+    `;
+    expect(indexes.map((index) => index.indexname)).toEqual([
+      'appointments_customer_id_idx',
+      'appointments_pkey',
+      'appointments_service_bay_id_idx',
+      'appointments_technician_id_idx',
+      'no_overlapping_bay_appointments',
+      'no_overlapping_technician_appointments',
+    ]);
+  });
+
   it('seeds the same reference records twice without duplicates or appointments', async () => {
     const first = await prisma.vehicle.findMany({ orderBy: { id: 'asc' } });
     await seedDatabase(prisma);

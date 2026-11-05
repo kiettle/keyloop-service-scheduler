@@ -1,5 +1,7 @@
 # Booking resilience, evidence, and future capacity
 
+> Historical planning or verification record; statements apply to their recorded source and date. Use the [current specification](../SPEC.md), [system design](../SYSTEM_DESIGN.md), and [verification summary](../FINAL_REVIEW.md) for current behavior.
+
 Status — 2026-11-04: **keep the 100-request burst resilience criterion**. Sustained **1,000 successfully committed bookings/second is an unverified future stretch goal**, not submission acceptance or a verified Keyloop traffic requirement. Historical decision: the former 10,000-bookings/second requirement is withdrawn. The throughput-goal revision was documentation-only and added no new capacity evidence. The subsequent idempotency burst verification is recorded separately below.
 
 ## Assessment resilience criterion
@@ -12,7 +14,9 @@ Status — 2026-11-04: **keep the 100-request burst resilience criterion**. Sust
 
 ## Evidence and limitations
 
-[LOAD_RESULTS.md](LOAD_RESULTS.md) preserves measured source/configuration details, executed commands, successes, and failed trials. On the earlier measured laptop snapshots, all final 100-request burst shapes passed. The two-process 500-RPS / 60-second control recorded 30,001 confirmations and persisted rows with no overload/errors. The 1,000-RPS minute trials failed their strict target, including the four-process trial with 59,478 confirmations and 523 overload responses.
+The separate [2026-11-05 holiday surge experiment](../HOLIDAY_PEAK.md) measured larger local bursts with unchanged per-process safeguards: 250 requests on two prestarted processes and 500 on four passed twice each. Smaller configurations failed their all-confirmation targets; all database invariants held. These are manually selected shared-host configurations, not a measured autoscaling transition or monetary cost comparison. They do not replace the assessment criterion or establish sustained throughput.
+
+[LOAD_RESULTS.md](../LOAD_RESULTS.md) preserves measured source/configuration details, executed commands, successes, and failed trials. On the earlier measured laptop snapshots, all final 100-request burst shapes passed. The two-process 500-RPS / 60-second control recorded 30,001 confirmations and persisted rows with no overload/errors. The 1,000-RPS minute trials failed their strict target, including the four-process trial with 59,478 confirmations and 523 overload responses.
 
 Those results used synthetic fixtures and shared-host generators, apps, and PostgreSQL; they are neither current-source benchmarks nor production capacity measurements. Subsequent maintenance and timeout changes were not followed by sustained-rate reruns. Historical failed diagnostics under the withdrawn target remain in LOAD_RESULTS; they are not submission blockers and must not be relabeled as passes.
 
@@ -38,8 +42,8 @@ The load runner now supplies distinct UUID v4 keys and verifies complete request
 npm run test:load -- --mode rate --rate 1000 --duration 60 --instances 4 --workload spread --report artifacts/stretch-1000.json
 ```
 
-The command is optional and was not executed for this documentation revision. A configured arrival rate is not proof of successful-booking throughput. See [README](../README.md#booking-capacity-and-load-verification) for the retained burst commands.
+The command is optional and was not executed for this documentation revision. A configured arrival rate is not proof of successful-booking throughput. See the [load verification record](../LOAD_RESULTS.md#final-review-burst-rerun--2026-11-05) for the retained burst commands.
 
 ## Idempotency follow-up
 
-The approved booking idempotency addition retains all capacity settings and the burst criterion. Ordinary bursts use a different key for each request, preserving resource contention; the dedicated same-key HTTP regression expects one creation and 99 replays. The earlier sustained-rate results remain historical, not evidence for the idempotent path. Current burst verification is recorded in [IDEMPOTENCY](IDEMPOTENCY.md); no sustained-rate rerun is included.
+The approved booking idempotency addition retains all capacity settings and the burst criterion. Ordinary bursts use a different key for each request, preserving resource contention; the dedicated same-key HTTP regression expects one creation and 99 replays. The earlier sustained-rate results remain historical, not evidence for the idempotent path. Current burst verification is recorded in [IDEMPOTENCY](IDEMPOTENCY_HISTORY.md); no sustained-rate rerun is included.

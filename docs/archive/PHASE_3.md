@@ -1,5 +1,7 @@
 # Phase 3 — Read-only scheduling
 
+> Historical planning or verification record; statements apply to their recorded source and date. Use the [current specification](../SPEC.md), [system design](../SYSTEM_DESIGN.md), and [verification summary](../FINAL_REVIEW.md) for current behavior.
+
 ## Approved boundary and spec alignment
 
 The user's Phase 3 approval covers internal scheduling logic only. The draft spec's section 14 labels scheduling as Phase 2 (including an availability HTTP API) and atomic booking as Phase 3. The latest explicit approval controls this milestone: neither HTTP APIs nor booking writes, transactions, retries, or idempotency are implemented. The product contract in `SPEC.md` remains the target for later approved work.

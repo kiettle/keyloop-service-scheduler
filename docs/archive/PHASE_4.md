@@ -1,5 +1,7 @@
 # Phase 4 — Booking API and concurrency
 
+> Historical planning or verification record; statements apply to their recorded source and date. Use the [current specification](../SPEC.md), [system design](../SYSTEM_DESIGN.md), and [verification summary](../FINAL_REVIEW.md) for current behavior.
+
 > Historical milestone and follow-up review. The later approved conflict-aware insertion/capacity implementation and current verification are in [CONCURRENCY_PROPOSAL.md](CONCURRENCY_PROPOSAL.md).
 
 Date: 2026-11-03, Asia/Ho_Chi_Minh. Scope: booking, retrieval, availability HTTP APIs; atomic confirmation; bounded retries; structured logs; and real PostgreSQL/HTTP/concurrency evidence. Phase 5 and optional features are not started.

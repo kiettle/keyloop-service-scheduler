@@ -69,14 +69,22 @@ export class ApiExceptionFilter implements ExceptionFilter {
         details = body.message;
       }
     }
+    const failure = {
+      event: 'request_failed',
+      requestId,
+      method: request.method,
+      status,
+      outcome: code,
+    };
     if (status >= 500) {
       this.logger.error({
-        event: 'request_failed',
-        requestId,
-        outcome: code,
+        ...failure,
         errorType: error instanceof Error ? error.name : 'UnknownError',
         sqlState: postgresState(error),
       });
+    } else {
+      // Log only the classified outcome; validation details may contain caller input.
+      this.logger.warn(failure);
     }
     response.setHeader('x-request-id', requestId);
     if (status === 503) response.setHeader('retry-after', '1');

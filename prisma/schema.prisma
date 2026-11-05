@@ -123,10 +123,6 @@ model Appointment {
   bookingRequest AppointmentBookingRequest?
 
   @@index([customerId])
-  @@index([vehicleId])
-  @@index([dealershipId, startAt])
-  @@index([serviceTypeId])
-  // These B-tree indexes also cover nonblocking rows for FK checks/history reads.
   @@index([technicianId])
   @@index([serviceBayId])
   @@map("appointments")

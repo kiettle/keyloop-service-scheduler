@@ -1,5 +1,7 @@
 # Phase 2 — database and domain modeling
 
+> Historical planning or verification record; statements apply to their recorded source and date. Use the [current specification](../SPEC.md), [system design](../SYSTEM_DESIGN.md), and [verification summary](../FINAL_REVIEW.md) for current behavior.
+
 Date: 2026-11-02 (Asia/Ho_Chi_Minh). Scope explicitly approved by the developer: eight Prisma models, database integrity/overlap constraints, reproducible migrations, deterministic seeds, PostgreSQL tests, and schema documentation. Application scheduling, allocation, retries, appointment APIs, and optional workflows are excluded.
 
 ## Decisions made before implementation
@@ -12,7 +14,7 @@ Date: 2026-11-02 (Asia/Ho_Chi_Minh). Scope explicitly approved by the developer:
 - Apply the initial migration atomically. Extension privileges, existing overlaps, and index-building locks are migration risks; verify a clean installation first.
 - Isolate tests on a separate PostgreSQL service and create a fresh database per run. Never reset the development database.
 
-See [DATABASE.md](DATABASE.md) for the complete enforcement/limitation table, fixture identities, migration design, and operational requirements.
+See [DATABASE.md](../DATABASE.md) for the complete enforcement/limitation table, fixture identities, migration design, and operational requirements.
 
 ## Implemented files
 

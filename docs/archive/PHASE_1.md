@@ -1,5 +1,7 @@
 # Phase 1 foundation record
 
+> Historical planning or verification record; statements apply to their recorded source and date. Use the [current specification](../SPEC.md), [system design](../SYSTEM_DESIGN.md), and [verification summary](../FINAL_REVIEW.md) for current behavior.
+
 Date: 2026-11-02 (Asia/Ho_Chi_Minh).
 
 ## Approved scope and decisions

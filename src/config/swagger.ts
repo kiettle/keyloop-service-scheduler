@@ -7,7 +7,7 @@ export function setupSwagger(app: INestApplication): void {
     .setDescription(
       'Backend-only Scenario A demo. Booking assigns resources and derives duration server-side. ' +
         'Availability is advisory and creates no reservation. Responses use UTC milliseconds. ' +
-        'Unknown booking/query fields are rejected. Booking requires one UUID v4 Idempotency-Key; successful results replay as 201 and keys are retained indefinitely. No authentication is implemented. ' +
+        'Unknown booking body fields and unsupported availability/pagination query fields are rejected. Booking requires one UUID v4 Idempotency-Key; successful results replay as 201 and keys are retained indefinitely. No authentication is implemented. ' +
         'Booking lookups and customer history use page/limit pagination. Booking assigns technicians and bays automatically. ' +
         'Responses include x-request-id; retryable 503 responses include Retry-After.',
     )

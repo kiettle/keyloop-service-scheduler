@@ -135,6 +135,132 @@ describe('booking API with migrated PostgreSQL', () => {
     );
   });
 
+  it('executes the documented booking examples unchanged and safely replays a repeat', async () => {
+    const document = await apiDocument();
+    const input = Object.fromEntries(
+      Object.entries(schema(document, 'CreateAppointmentDto').properties ?? {}).map(
+        ([field, property]) => {
+          if ('$ref' in property) throw new Error('Expected an inline booking field schema.');
+          return [field, property.example as unknown];
+        },
+      ),
+    );
+    const header = document.paths['/api/v1/appointments'].post!.parameters?.find(
+      (parameter) => !('$ref' in parameter) && parameter.name === 'Idempotency-Key',
+    );
+    if (
+      !header ||
+      '$ref' in header ||
+      !header.schema ||
+      '$ref' in header.schema ||
+      typeof header.schema.example !== 'string'
+    ) {
+      throw new Error('Missing example idempotency key.');
+    }
+    const key = header.schema.example;
+    const first = await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', key)
+      .send(input)
+      .expect(201);
+    expect(first.body).toMatchObject({ ...input, endAt: at('10:30').toISOString() });
+    expect(first.headers['idempotency-replayed']).toBe('false');
+    const repeat = await application.http
+      .post('/api/v1/appointments')
+      .set('Idempotency-Key', key)
+      .send(input)
+      .expect(201);
+    expect(repeat.body).toEqual(first.body);
+    expect(repeat.headers['idempotency-replayed']).toBe('true');
+    expect(await prisma.appointment.count()).toBe(1);
+    expect(await prisma.appointmentBookingRequest.count()).toBe(1);
+  });
+
+  it.each([
+    '/api/v1/customers',
+    '/api/v1/customers/{customerId}/vehicles',
+    '/api/v1/dealerships',
+    '/api/v1/customers/{customerId}/appointments',
+  ])('documents integer pagination query parameters for %s', async (path) => {
+    const document = await apiDocument();
+    expect(document.paths[path].get!.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'page',
+          in: 'query',
+          required: false,
+          schema: {
+            type: 'integer',
+            default: 1,
+            minimum: 1,
+            maximum: 2147483647,
+          },
+        }),
+        expect.objectContaining({
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: {
+            type: 'integer',
+            default: 20,
+            minimum: 1,
+            maximum: 100,
+          },
+        }),
+      ]),
+    );
+  });
+
+  it('documents valid pagination examples for every paginated response', async () => {
+    const document = await apiDocument();
+    for (const name of [
+      'CustomersPageDto',
+      'VehiclesPageDto',
+      'DealershipsPageDto',
+      'CustomerAppointmentsPageDto',
+    ]) {
+      const properties = schema(document, name).properties;
+      expect(properties?.page).toMatchObject({ type: 'integer', minimum: 1, example: 1 });
+      expect(properties?.limit).toMatchObject({
+        type: 'integer',
+        minimum: 1,
+        maximum: 100,
+        example: 20,
+      });
+      expect(properties?.hasNext).toMatchObject({ type: 'boolean', example: false });
+    }
+  });
+
+  it('documents lookup examples that match the seeded public data', async () => {
+    const document = await apiDocument();
+    for (const [name, path] of [
+      ['CustomerDto', '/api/v1/customers'],
+      ['VehicleDto', `/api/v1/customers/${id.customer1}/vehicles`],
+      ['DealershipDto', '/api/v1/dealerships'],
+    ]) {
+      const response = await application.http.get(path).expect(200);
+      const [item] = (response.body as { items: Record<string, unknown>[] }).items;
+      for (const [field, property] of Object.entries(schema(document, name).properties ?? {})) {
+        expect(property).toHaveProperty('example', item[field]);
+      }
+    }
+  });
+
+  it('documents lookup validation and not-found examples using the actual error contract', async () => {
+    const document = await apiDocument();
+    const operation = document.paths['/api/v1/customers/{customerId}/vehicles'].get!;
+    for (const [status, path] of [
+      [400, `/api/v1/customers/${id.customer1}/vehicles?page=0`],
+      [404, '/api/v1/customers/20000000-0000-4000-8000-000000000099/vehicles'],
+    ] as const) {
+      const response = await application.http.get(path).expect(status);
+      expect(operation.responses[status]).toHaveProperty(
+        ['content', 'application/json', 'example', 'error'],
+        (response.body as ErrorJson).error,
+      );
+    }
+  });
+
   it('documents public appointment/availability responses and required query parameters', async () => {
     const document = await apiDocument();
     const appointment = schema(document, 'AppointmentResponseDto');

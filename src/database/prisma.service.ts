@@ -4,6 +4,8 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Environment } from '../config/environment';
 
+export const DATABASE_POOL_MAX = 20;
+
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   constructor(config: ConfigService<Environment, true>) {
@@ -11,7 +13,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       adapter: new PrismaPg({
         connectionString: config.get('DATABASE_URL', { infer: true }),
         connectionTimeoutMillis: 5000,
-        max: 10,
+        max: DATABASE_POOL_MAX,
       }),
     });
   }

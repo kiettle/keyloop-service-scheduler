@@ -27,24 +27,27 @@ async function main() {
   loop.enable();
   let previousCpu = process.cpuUsage();
   let previousTime = performance.now();
-  const sample = setInterval(() => {
-    const cpu = process.cpuUsage();
-    const now = performance.now();
-    const value: LoadSample = {
-      activeBookings: app.app.get(BookingCapacity).counts.active,
-      pendingBookings: app.app.get(BookingCapacity).counts.pending,
-      cpuPercent:
-        ((cpu.user - previousCpu.user + cpu.system - previousCpu.system) /
-          ((now - previousTime) * 1000)) *
-        100,
-      eventLoopDelayMs: Number.isFinite(loop.mean) ? loop.mean / 1e6 : 0,
-      rssMiB: process.memoryUsage().rss / 1024 ** 2,
-    };
-    previousCpu = cpu;
-    previousTime = now;
-    loop.reset();
-    process.send?.({ type: 'sample', sample: value } satisfies LoadMessage);
-  }, 1000);
+  const sample = setInterval(
+    () => {
+      const cpu = process.cpuUsage();
+      const now = performance.now();
+      const value: LoadSample = {
+        activeBookings: app.app.get(BookingCapacity).counts.active,
+        pendingBookings: app.app.get(BookingCapacity).counts.pending,
+        cpuPercent:
+          ((cpu.user - previousCpu.user + cpu.system - previousCpu.system) /
+            ((now - previousTime) * 1000)) *
+          100,
+        eventLoopDelayMs: Number.isFinite(loop.mean) ? loop.mean / 1e6 : 0,
+        rssMiB: process.memoryUsage().rss / 1024 ** 2,
+      };
+      previousCpu = cpu;
+      previousTime = now;
+      loop.reset();
+      process.send?.({ type: 'sample', sample: value } satisfies LoadMessage);
+    },
+    Number(process.env.LOAD_SAMPLE_INTERVAL_MS ?? 1000),
+  );
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
@@ -64,7 +67,6 @@ async function main() {
   });
   process.once('SIGTERM', shutdown);
   process.once('disconnect', shutdown);
-  await app.app.listen(0, '127.0.0.1');
   const address = (app.app.getHttpServer() as Server).address() as AddressInfo;
   process.send?.({ type: 'ready', url: `http://127.0.0.1:${address.port}` } satisfies LoadMessage);
 }

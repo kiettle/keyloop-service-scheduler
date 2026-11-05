@@ -1,6 +1,8 @@
-> Historical planning guide from 2026-11-02. For the current implementation, setup, and submission status, use [README](README.md) and [FINAL_REVIEW](docs/FINAL_REVIEW.md). The prospective checklist below is retained as development history.
+> Historical planning guide from 2026-11-02. For the current implementation, setup, and submission status, use [README](../../README.md) and [FINAL_REVIEW](VERIFICATION_HISTORY.md). The prospective checklist below is retained as development history.
 
-> Current goal revision — 2026-11-04: keep the 100-request burst resilience criterion (100 confirmations with sufficient eligible resource/time capacity; one confirmation and 99 availability conflicts for one contested pair/interval) and the mandatory 20-request regression. Sustained 1,000 successful bookings/second is an unverified future stretch goal, not submission acceptance or a verified Keyloop traffic requirement. Historical measurements do not establish current-source or production capacity. See [capacity guidance](docs/CAPACITY_PLAN.md).
+> Historical planning or verification record; statements apply to their recorded source and date. Use the [current specification](../SPEC.md), [system design](../SYSTEM_DESIGN.md), and [verification summary](../FINAL_REVIEW.md) for current behavior.
+
+> Current goal revision — 2026-11-04: keep the 100-request burst resilience criterion (100 confirmations with sufficient eligible resource/time capacity; one confirmation and 99 availability conflicts for one contested pair/interval) and the mandatory 20-request regression. Sustained 1,000 successful bookings/second is an unverified future stretch goal, not submission acceptance or a verified Keyloop traffic requirement. Historical measurements do not establish current-source or production capacity. See [capacity guidance](CAPACITY_PLAN.md).
 
 # Keyloop Scenario A — Start Here (Developer's Guide)
 

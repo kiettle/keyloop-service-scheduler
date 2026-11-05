@@ -58,9 +58,9 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
     PORT: port,
     DATABASE_URL: input.DATABASE_URL,
     BOOKING_MAX_ATTEMPTS: attempts,
-    // Runtime pool has ten connections; reserve at least two for other operations.
-    BOOKING_MAX_CONCURRENT: integerSetting(input, 'BOOKING_MAX_CONCURRENT', 8, 1, 8),
-    BOOKING_MAX_PENDING: integerSetting(input, 'BOOKING_MAX_PENDING', 128, 0, 1000),
+    // Runtime pool allows twenty connections; leave headroom for other operations.
+    BOOKING_MAX_CONCURRENT: integerSetting(input, 'BOOKING_MAX_CONCURRENT', 16, 1, 16),
+    BOOKING_MAX_PENDING: integerSetting(input, 'BOOKING_MAX_PENDING', 1024, 0, 1024),
     BOOKING_TIMEOUT_MS: integerSetting(input, 'BOOKING_TIMEOUT_MS', 5000, 100, 30000),
     ...(typeof redisUrl === 'string' && redisUrl !== ''
       ? { REDIS_URL: redisUrl, CATALOG_CACHE_NAMESPACE: namespace as string }
